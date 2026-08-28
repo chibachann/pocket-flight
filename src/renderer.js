@@ -16,6 +16,11 @@ export const FOG_START = 800;
 export const SKY_HORIZON = [176, 202, 226];
 export const SKY_ZENITH = [42, 92, 168];
 
+/** 縦画面で確保したい水平視野角の下限（ラジアン）。 */
+const PORTRAIT_MIN_H_FOV = (68 * Math.PI) / 180;
+/** 縦画面で許容する垂直視野角の上限（ラジアン）。 */
+const PORTRAIT_MAX_V_FOV = (90 * Math.PI) / 180;
+
 export class Renderer {
   constructor(canvas) {
     this.canvas = canvas;
@@ -25,9 +30,11 @@ export class Renderer {
     this.dpr = 1;
     /** 端末性能に応じた解像度倍率（1.0が最高画質）。 */
     this.qualityScale = 1;
-    /** 視野角（垂直方向・ラジアン）。 */
+    /** 視野角（横画面での垂直方向・ラジアン）。 */
     this.fov = (68 * Math.PI) / 180;
     this.focal = 1;
+    /** 画面が縦長かどうか。HUDや操作エリアの配置切り替えに使う。 */
+    this.portrait = false;
     this.camPos = vec3();
     this.camRight = vec3(1, 0, 0);
     this.camUp = vec3(0, 1, 0);
@@ -57,7 +64,17 @@ export class Renderer {
     this.dpr = dpr;
     this.width = w;
     this.height = h;
-    this.focal = this.height / 2 / Math.tan(this.fov / 2);
+    this.portrait = h > w;
+    if (this.portrait) {
+      // 縦画面で垂直視野角を横画面と同じにすると、水平方向が極端に狭くなって前が見えない。
+      // 水平視野角を一定以上確保しつつ、垂直が広がって歪みすぎないよう上限で止める。
+      // アスペクト比1では横画面の式と一致するため、回転しても見え方が飛ばない。
+      const byWidth = this.width / 2 / Math.tan(PORTRAIT_MIN_H_FOV / 2);
+      const byHeight = this.height / 2 / Math.tan(PORTRAIT_MAX_V_FOV / 2);
+      this.focal = Math.max(byWidth, byHeight);
+    } else {
+      this.focal = this.height / 2 / Math.tan(this.fov / 2);
+    }
   }
 
   /** カメラの位置と姿勢を設定する。 */

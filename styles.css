@@ -229,13 +229,6 @@ button {
   color: var(--muted);
 }
 
-/* 縦向き時の案内は横向きでは隠す。 */
-@media (orientation: landscape) {
-  #rotate {
-    display: none !important;
-  }
-}
-
 .options {
   display: grid;
   gap: 0 10px;

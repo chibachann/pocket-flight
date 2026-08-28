@@ -8,10 +8,30 @@ import { clamp, damp } from './math.js';
 
 /** 仮想スティックの最大移動量（画面短辺に対する比率）。 */
 const STICK_RADIUS_RATIO = 0.17;
-/** スロットルスライダーの配置（画面幅・高さに対する比率）。 */
-export const THROTTLE_AREA = { x0: 0.84, x1: 1.0, y0: 0.16, y1: 0.88 };
-/** 仮想スティックとして扱う画面左側の範囲。 */
-const STICK_AREA_X = 0.62;
+
+/**
+ * 画面の向きごとの操作エリア配置（画面幅・高さに対する比率）。
+ * throttle はスロットルスライダーの範囲、stickMaxX は仮想スティックとして扱う左側の範囲。
+ * 縦画面では画面が細長く上端に指が届かないため、スロットルを下半分に寄せる。
+ */
+const LAYOUT = {
+  landscape: { throttle: { x0: 0.84, x1: 1.0, y0: 0.16, y1: 0.88 }, stickMaxX: 0.62 },
+  portrait: { throttle: { x0: 0.78, x1: 1.0, y0: 0.6, y1: 0.95 }, stickMaxX: 0.72 },
+};
+
+/** 画面の向きに応じた操作エリアの配置を返す。 */
+export function controlLayout(portrait) {
+  return portrait ? LAYOUT.portrait : LAYOUT.landscape;
+}
+
+/** 画面（表示内容）が自然な向きから何度回転しているか。傾き操作の軸合わせに使う。 */
+function screenAngle() {
+  const so = window.screen && window.screen.orientation;
+  if (so && typeof so.angle === 'number') return so.angle;
+  // 旧 iOS Safari 向けのフォールバック。-90 などを 0〜359 に正規化する。
+  if (typeof window.orientation === 'number') return ((window.orientation % 360) + 360) % 360;
+  return 0;
+}
 
 export class Controls {
   constructor(canvas) {
@@ -68,24 +88,33 @@ export class Controls {
     return { x: (clientX - r.left) / r.width, y: (clientY - r.top) / r.height };
   }
 
+  /** 現在の画面の向きに応じた操作エリアの配置。 */
+  _layout() {
+    const r = this.canvas.getBoundingClientRect();
+    return controlLayout(r.height > r.width);
+  }
+
   /** スロットル領域内かどうか。 */
-  _inThrottle(n) {
-    return n.x >= THROTTLE_AREA.x0 && n.y >= THROTTLE_AREA.y0 - 0.06 && n.y <= THROTTLE_AREA.y1 + 0.06;
+  _inThrottle(n, layout) {
+    const a = layout.throttle;
+    return n.x >= a.x0 && n.y >= a.y0 - 0.06 && n.y <= a.y1 + 0.06;
   }
 
   /** スロットル領域のY座標からスロットル値を決める。 */
-  _setThrottleFrom(n) {
-    const t = (n.y - THROTTLE_AREA.y0) / (THROTTLE_AREA.y1 - THROTTLE_AREA.y0);
+  _setThrottleFrom(n, layout) {
+    const a = layout.throttle;
+    const t = (n.y - a.y0) / (a.y1 - a.y0);
     this.input.throttle = clamp(1 - t, 0, 1);
   }
 
   _beginTouch(id, n) {
-    if (this._inThrottle(n)) {
+    const layout = this._layout();
+    if (this._inThrottle(n, layout)) {
       this.throttleTouchId = id;
-      this._setThrottleFrom(n);
+      this._setThrottleFrom(n, layout);
       return;
     }
-    if (n.x < STICK_AREA_X && this.scheme === 'touch' && !this.stick.active) {
+    if (n.x < layout.stickMaxX && this.scheme === 'touch' && !this.stick.active) {
       this.stick.active = true;
       this.stick.id = id;
       this.stick.ox = n.x;
@@ -97,7 +126,7 @@ export class Controls {
 
   _moveTouch(id, n) {
     if (id === this.throttleTouchId) {
-      this._setThrottleFrom(n);
+      this._setThrottleFrom(n, this._layout());
       return;
     }
     if (this.stick.active && id === this.stick.id) {
@@ -173,11 +202,11 @@ export class Controls {
   stickVector() {
     if (!this.stick.active) return { x: 0, y: 0 };
     const r = this.canvas.getBoundingClientRect();
-    const aspect = r.width / Math.max(r.height, 1);
-    // 画面短辺基準の円形リミットにする。
-    const radius = STICK_RADIUS_RATIO;
-    const dx = ((this.stick.x - this.stick.ox) * (aspect > 1 ? 1 / aspect : 1)) / radius;
-    const dy = ((this.stick.y - this.stick.oy) * (aspect > 1 ? 1 : aspect)) / radius;
+    // 画面短辺を基準にした円形リミット。実ピクセルで計算するので、
+    // 縦横どちらの向きでも上下と左右の必要な指の移動量が揃う。
+    const radius = Math.max(Math.min(r.width, r.height), 1) * STICK_RADIUS_RATIO;
+    const dx = ((this.stick.x - this.stick.ox) * r.width) / radius;
+    const dy = ((this.stick.y - this.stick.oy) * r.height) / radius;
     const l = Math.hypot(dx, dy);
     if (l > 1) return { x: dx / l, y: dy / l };
     return { x: dx, y: dy };
@@ -199,9 +228,16 @@ export class Controls {
       let dGamma = this.tiltRaw.gamma - this.tiltZero.gamma;
       if (dGamma > 180) dGamma -= 360;
       if (dGamma < -180) dGamma += 360;
-      // 端末を手前に倒す＝機首下げ、右に傾ける＝右ロール。
-      pitch = clamp(-dBeta / 26, -1, 1);
-      roll = clamp(dGamma / 26, -1, 1);
+      // beta/gamma は端末の自然な向き（縦）を基準にした角度なので、
+      // 画面の回転角ぶんだけ傾きベクトルを回して、見た目の左右・上下に合わせる。
+      const a = (screenAngle() * Math.PI) / 180;
+      const cs = Math.cos(a);
+      const sn = Math.sin(a);
+      const tx = dGamma * cs + dBeta * sn;
+      const ty = -dGamma * sn + dBeta * cs;
+      // 画面を手前に倒す＝機首下げ、右に傾ける＝右ロール。
+      pitch = clamp(-ty / 26, -1, 1);
+      roll = clamp(tx / 26, -1, 1);
       if (this.invertPitch) pitch = -pitch;
       // 傾き操作では微小な揺れを無視する。
       if (Math.abs(pitch) < 0.08) pitch = 0;
