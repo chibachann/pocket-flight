@@ -339,9 +339,17 @@ export function drawTrees(renderer) {
   const ci = Math.floor(cam.x / TREE_CELL);
   const cj = Math.floor(cam.z / TREE_CELL);
   const span = Math.ceil(TREE_RANGE / TREE_CELL);
+  // 森のまとまりを作るための粗いグリッド。TREE_CELLよりずっと大きい単位で密度を
+  // 決めることで、密な森と疎らな場所がまだらにでき、単調な一様分布を避けられる。
+  // 平均密度は元の一様0.55としばぼ同じ（0.3〜0.8の中央値）に保ち、木の総数と
+  // 描画コール数が変わらないようにしている。
+  const FOREST_CELL = 5;
   for (let j = cj - span; j <= cj + span; j++) {
     for (let i = ci - span; i <= ci + span; i++) {
-      if (hashCell(i, j, 1) > 0.55) continue;
+      const fi = Math.floor(i / FOREST_CELL);
+      const fj = Math.floor(j / FOREST_CELL);
+      const density = 0.3 + hashCell(fi, fj, 20) * 0.5;
+      if (hashCell(i, j, 1) > density) continue;
       const x = (i + hashCell(i, j, 2)) * TREE_CELL;
       const z = (j + hashCell(i, j, 3)) * TREE_CELL;
       const dx = x - cam.x;
@@ -352,7 +360,10 @@ export function drawTrees(renderer) {
       // 水面と高山、飛行場の内側には生やさない。
       if (ground < 6 || ground > 420) continue;
       if (Math.abs(x) < 220 && Math.abs(z) < RUNWAY.halfLength + 220) continue;
-      treeList.push({ x, z, ground, h: 9 + hashCell(i, j, 4) * 11, d2 });
+      // 色合いと高さに個体差を付けて、単色三角形の羅列に見えないようにする。
+      const tint = hashCell(i, j, 5);
+      const color = tint < 0.34 ? [32, 76, 40] : tint < 0.67 ? [46, 96, 46] : [60, 84, 32];
+      treeList.push({ x, z, ground, h: 7 + hashCell(i, j, 4) * 16, color, d2 });
     }
   }
   treeList.sort((a, b) => b.d2 - a.d2);
@@ -367,7 +378,7 @@ export function drawTrees(renderer) {
         vec3(t.x + right.x * w, base + right.y * w, t.z + right.z * w),
         vec3(t.x, base + t.h, t.z),
       ],
-      renderer.fog([38, 68, 40], dist),
+      renderer.fog(t.color, dist),
     );
   }
 }
@@ -481,46 +492,228 @@ export function drawGates(renderer, gates, activeIndex) {
   }
 }
 
-/** 飛行場を示す簡易な建物群。 */
+/**
+ * 直方体を描く共通ヘルパー（格納庫・管制塔・街の建物で共用）。
+ * 呼び出し側が奥から手前の順で呼ぶことを前提に、ここでは深さソートを行わない。
+ * bandT（0〜1、0で帯なし）を指定すると前面と右面だけ上下2色に分け、
+ * 窓の帯があるように見せる。実際に窓を1枚ずつ描くとコストが跳ねるための代替表現で、
+ * 背面・左面は目立ちにくいため帯を省略してポリゴン数を抑えている
+ * （帯なしで5面、帯ありで7面。1棟あたり10面以内という目安に収まる）。
+ */
+function drawBox(renderer, x, z, w, d, y0, h, base, upper, roof, bandT, dist) {
+  const x0 = x - w / 2;
+  const x1 = x + w / 2;
+  const z0 = z - d / 2;
+  const z1 = z + d / 2;
+  const top = y0 + h;
+  const shade = (c, k) => [c[0] * k, c[1] * k, c[2] * k];
+  const front = shade(base, 1.0);
+  const right = shade(base, 0.86);
+  const back = shade(base, 0.76);
+  const left = shade(base, 0.68);
+  if (bandT > 0 && bandT < 1) {
+    const midY = y0 + h * bandT;
+    const uf = shade(upper, 1.0);
+    const ur = shade(upper, 0.86);
+    renderer.fillPolygon([vec3(x0, y0, z0), vec3(x1, y0, z0), vec3(x1, midY, z0), vec3(x0, midY, z0)], renderer.fog(front, dist));
+    renderer.fillPolygon([vec3(x0, midY, z0), vec3(x1, midY, z0), vec3(x1, top, z0), vec3(x0, top, z0)], renderer.fog(uf, dist));
+    renderer.fillPolygon([vec3(x1, y0, z0), vec3(x1, y0, z1), vec3(x1, midY, z1), vec3(x1, midY, z0)], renderer.fog(right, dist));
+    renderer.fillPolygon([vec3(x1, midY, z0), vec3(x1, midY, z1), vec3(x1, top, z1), vec3(x1, top, z0)], renderer.fog(ur, dist));
+  } else {
+    renderer.fillPolygon([vec3(x0, y0, z0), vec3(x1, y0, z0), vec3(x1, top, z0), vec3(x0, top, z0)], renderer.fog(front, dist));
+    renderer.fillPolygon([vec3(x1, y0, z0), vec3(x1, y0, z1), vec3(x1, top, z1), vec3(x1, top, z0)], renderer.fog(right, dist));
+  }
+  renderer.fillPolygon([vec3(x1, y0, z1), vec3(x0, y0, z1), vec3(x0, top, z1), vec3(x1, top, z1)], renderer.fog(back, dist));
+  renderer.fillPolygon([vec3(x0, y0, z1), vec3(x0, y0, z0), vec3(x0, top, z0), vec3(x0, top, z1)], renderer.fog(left, dist));
+  renderer.fillPolygon([vec3(x0, top, z0), vec3(x1, top, z0), vec3(x1, top, z1), vec3(x0, top, z1)], renderer.fog(roof, dist));
+}
+
+/** 飛行場の格納庫群（西側のエプロン沿いに並べる。東側にも1棟だけ置いてバランスを取る）。 */
 const HANGARS = [
-  { x: -140, z: -220, w: 46, d: 30, h: 16 },
-  { x: -140, z: -140, w: 46, d: 30, h: 16 },
+  { x: -150, z: -300, w: 44, d: 28, h: 15 },
+  { x: -150, z: -230, w: 44, d: 28, h: 15 },
+  { x: -150, z: -100, w: 50, d: 32, h: 17 },
+  { x: -150, z: 40, w: 38, d: 26, h: 13 },
+  { x: -150, z: 160, w: 58, d: 34, h: 19 },
   { x: 150, z: 260, w: 60, d: 36, h: 20 },
 ];
 
+/** 管制塔（軸柱＋上部の見張り所）。エプロンの奥に1つだけ置く。 */
+const TOWER = { x: -190, z: -20 };
+
+/** 駐機中の機体（簡易な箱＋主翼、既存のAIRCRAFT_MODELを流用すると重いので専用の簡易形状にした）。 */
+const PARKED_AIRCRAFT = [
+  { x: -128, z: -268, heading: 0.35 },
+  { x: -108, z: -95, heading: -0.2 },
+  { x: 130, z: 235, heading: Math.PI + 0.25 },
+];
+
+/** 飛行場の建物・機体をまとめて距離順に並べ替えたリスト（配置は固定なので初回だけ組み立てる）。 */
+const airportItems = [];
+for (const h of HANGARS) airportItems.push({ kind: 'hangar', ...h });
+airportItems.push({ kind: 'tower', x: TOWER.x, z: TOWER.z });
+for (const p of PARKED_AIRCRAFT) airportItems.push({ kind: 'plane', ...p });
+
 /** 格納庫を箱として描く。 */
-export function drawBuildings(renderer) {
+function drawHangar(renderer, item, dist) {
+  drawBox(renderer, item.x, item.z, item.w, item.d, AIRFIELD_ELEVATION, item.h, [150, 152, 158], [150, 152, 158], [182, 186, 192], 0, dist);
+}
+
+/** 管制塔を軸柱＋見張り所の2段の箱で描く。 */
+function drawTower(renderer, item, dist) {
+  const shaftH = 32;
+  const cabH = 8;
+  drawBox(renderer, item.x, item.z, 9, 9, AIRFIELD_ELEVATION, shaftH, [150, 150, 156], [150, 150, 156], [126, 128, 134], 0, dist);
+  drawBox(renderer, item.x, item.z, 16, 16, AIRFIELD_ELEVATION + shaftH, cabH, [90, 150, 170], [90, 150, 170], [72, 122, 140], 0, dist);
+}
+
+/** 駐機中の機体を簡略化した箱＋主翼で描く（機首方向 heading はラジアン、+Zが0）。 */
+function drawParkedPlane(renderer, item, dist) {
   const y = AIRFIELD_ELEVATION;
-  for (const b of HANGARS) {
-    const center = vec3(b.x, y + b.h / 2, b.z);
+  const cs = Math.cos(item.heading);
+  const sn = Math.sin(item.heading);
+  const w = (lx, ly, lz) => vec3(item.x + lx * cs + lz * sn, y + ly, item.z - lx * sn + lz * cs);
+  renderer.fillPolygon([w(-0.9, 0.2, -3.5), w(0.9, 0.2, -3.5), w(0.6, 1.3, 2.6), w(-0.6, 1.3, 2.6)], renderer.fog([214, 218, 224], dist));
+  renderer.fillPolygon([w(0.9, 0.2, -3.5), w(0.9, 0.2, 3.0), w(0, 1.5, 3.6), w(0.6, 1.3, 2.6)], renderer.fog([190, 194, 200], dist));
+  renderer.fillPolygon([w(-0.9, 0.2, -3.5), w(-0.6, 1.3, 2.6), w(0, 1.5, 3.6), w(-0.9, 0.2, 3.0)], renderer.fog([176, 180, 188], dist));
+  renderer.fillPolygon([w(-0.7, 0.5, 0.6), w(-6.0, 0.5, -0.4), w(-6.0, 0.5, -1.0), w(-0.7, 0.5, -0.4)], renderer.fog([198, 202, 208], dist));
+  renderer.fillPolygon([w(0.7, 0.5, 0.6), w(6.0, 0.5, -0.4), w(6.0, 0.5, -1.0), w(0.7, 0.5, -0.4)], renderer.fog([198, 202, 208], dist));
+}
+
+/**
+ * 飛行場のディテール（格納庫・管制塔・駐機中の機体）をまとめて描く。
+ * Zバッファが無いため、必ず距離でソートしてから奥→手前の順で描く
+ * （元のdrawBuildingsはソートしていなかったが、棟数を増やすにあたって追加した）。
+ */
+export function drawBuildings(renderer) {
+  const order = [];
+  for (const item of airportItems) {
+    const cy =
+      item.kind === 'tower' ? AIRFIELD_ELEVATION + 17 : item.kind === 'plane' ? AIRFIELD_ELEVATION + 1 : AIRFIELD_ELEVATION + item.h / 2;
+    const center = vec3(item.x, cy, item.z);
     if (!renderer.isInFront(center, 5)) continue;
     const d = renderer.distanceTo(center);
     if (d > FAR * 0.5) continue;
-    const x0 = b.x - b.w / 2;
-    const x1 = b.x + b.w / 2;
-    const z0 = b.z - b.d / 2;
-    const z1 = b.z + b.d / 2;
-    const top = y + b.h;
-    renderer.fillPolygon(
-      [vec3(x0, y, z0), vec3(x1, y, z0), vec3(x1, top, z0), vec3(x0, top, z0)],
-      renderer.fog([150, 152, 158], d),
-    );
-    renderer.fillPolygon(
-      [vec3(x0, y, z1), vec3(x1, y, z1), vec3(x1, top, z1), vec3(x0, top, z1)],
-      renderer.fog([132, 134, 140], d),
-    );
-    renderer.fillPolygon(
-      [vec3(x0, y, z0), vec3(x0, y, z1), vec3(x0, top, z1), vec3(x0, top, z0)],
-      renderer.fog([120, 122, 128], d),
-    );
-    renderer.fillPolygon(
-      [vec3(x1, y, z0), vec3(x1, y, z1), vec3(x1, top, z1), vec3(x1, top, z0)],
-      renderer.fog([166, 168, 174], d),
-    );
-    renderer.fillPolygon(
-      [vec3(x0, top, z0), vec3(x1, top, z0), vec3(x1, top, z1), vec3(x0, top, z1)],
-      renderer.fog([182, 186, 192], d),
-    );
+    order.push({ item, d });
+  }
+  order.sort((a, b) => b.d - a.d);
+  for (const { item, d } of order) {
+    if (item.kind === 'hangar') drawHangar(renderer, item, d);
+    else if (item.kind === 'tower') drawTower(renderer, item, d);
+    else drawParkedPlane(renderer, item, d);
+  }
+}
+
+/** 駐機場（エプロン）と、滑走路へ繋がる誘導路。平面ポリゴンなので低コスト。 */
+const APRON = { x0: -170, x1: -50, z0: -320, z1: 320 };
+const TAXIWAY = { x0: -50, x1: -RUNWAY.halfWidth, z0: -14, z1: 14 };
+
+/** エプロンと誘導路を描く。滑走路と同じ考え方の平面ポリゴン2枚だけなので負荷はごく小さい。 */
+export function drawApron(renderer) {
+  const y = AIRFIELD_ELEVATION + 0.35;
+  const center = vec3((APRON.x0 + APRON.x1) / 2, y, (APRON.z0 + APRON.z1) / 2);
+  if (!renderer.isInFront(center, 5)) return;
+  const dist = renderer.distanceTo(center);
+  if (dist > FAR) return;
+  renderer.fillPolygon(
+    [vec3(APRON.x0, y, APRON.z0), vec3(APRON.x1, y, APRON.z0), vec3(APRON.x1, y, APRON.z1), vec3(APRON.x0, y, APRON.z1)],
+    renderer.fog([72, 74, 80], dist),
+  );
+  renderer.fillPolygon(
+    [vec3(TAXIWAY.x0, y, TAXIWAY.z0), vec3(TAXIWAY.x1, y, TAXIWAY.z0), vec3(TAXIWAY.x1, y, TAXIWAY.z1), vec3(TAXIWAY.x0, y, TAXIWAY.z1)],
+    renderer.fog([64, 66, 72], dist),
+  );
+}
+
+/** 街並みの1マスの大きさ(m)。この間隔でビル候補を配置する。 */
+const CITY_CELL = 85;
+/**
+ * ビルを生成する半径。地形が平坦化されている範囲（terrain.jsのAIRFIELD_OUTER=1900m）の
+ * 内側に必ず収める。ここを超えて起伏のある地形に建物を置くと、Zバッファが無い都合上
+ * 「建物は常に地形より手前に塗られる」ため、丘の裏の建物が透けて見える破綻が起きる。
+ */
+const CITY_MIN_R = 260;
+const CITY_MAX_R = 1750;
+/** 同時に描画するビルの上限（近い順）。低スペック端末でも解像度が落ちすぎないようにする。 */
+const MAX_CITY_BUILDINGS = 55;
+const cityCandidates = [];
+/** ビルの色みのバリエーション。棟ごとにハッシュで1色選ぶ。 */
+const CITY_COLORS = [
+  [188, 96, 82],
+  [96, 132, 168],
+  [178, 168, 120],
+  [126, 150, 128],
+  [150, 118, 158],
+  [176, 176, 184],
+  [200, 150, 96],
+];
+
+/** 街区のビル候補を、近い順に cap 棟まで集める。 */
+function collectCityBuildings(renderer, cap) {
+  cityCandidates.length = 0;
+  const cam = renderer.camPos;
+  const ci = Math.floor(cam.x / CITY_CELL);
+  const cj = Math.floor(cam.z / CITY_CELL);
+  // 遠方まで律儀に走査すると候補が膨らむだけなので、実際に見える範囲に絞る。
+  const scanR = Math.min(FAR * 0.5, CITY_MAX_R + 300);
+  const span = Math.ceil(scanR / CITY_CELL);
+  for (let j = cj - span; j <= cj + span; j++) {
+    for (let i = ci - span; i <= ci + span; i++) {
+      if (hashCell(i, j, 41) > 0.4) continue; // 存在確率（密度）
+      const x = (i + 0.5 + (hashCell(i, j, 42) - 0.5) * 0.6) * CITY_CELL;
+      const z = (j + 0.5 + (hashCell(i, j, 43) - 0.5) * 0.6) * CITY_CELL;
+      const r = Math.hypot(x, z);
+      if (r < CITY_MIN_R || r > CITY_MAX_R) continue;
+      // 滑走路の帯には置かない。
+      if (Math.abs(x) < 90 && Math.abs(z) < RUNWAY.halfLength + 160) continue;
+      // エプロン・格納庫・管制塔のあたりにも置かない。
+      if (x > -210 && x < -30 && Math.abs(z) < 340) continue;
+      const dx = x - cam.x;
+      const dz = z - cam.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > scanR * scanR) continue;
+      cityCandidates.push({ i, j, x, z, d2 });
+    }
+  }
+  cityCandidates.sort((a, b) => a.d2 - b.d2);
+  if (cityCandidates.length > cap) cityCandidates.length = cap;
+}
+
+/**
+ * 街並みを描く（飛行場周辺の平坦地のみ、詳細はCITY_MAX_R/MIN_Rのコメント参照）。
+ * 配置はhashCellによる決定的な擬似乱数で、毎回同じ街になる。高層・中層・低層を
+ * 混ぜ、地表の実際の標高（surfaceHeightAt）に載せることで、平坦化のブレンド境界
+ * （AIRFIELD_INNER〜OUTERの間）でも建物が地面から浮いたり埋まったりしないようにする。
+ *
+ * 高度に応じて描画棟数の上限を絞る（drawTreesの高度カリングと同じ考え方）。
+ * 高高度から見ると個々のビルはほとんど視認できないのに、見渡せる範囲が
+ * 広がる分だけ候補数は増えてしまうため、上限を下げてコストを頭打ちにする。
+ */
+export function drawCity(renderer) {
+  const camY = renderer.camPos.y;
+  const cap = camY > 700 ? 16 : camY > 350 ? 34 : MAX_CITY_BUILDINGS;
+  collectCityBuildings(renderer, cap);
+  const dist2 = [];
+  for (const c of cityCandidates) dist2.push(Math.sqrt(c.d2));
+  // 遠い順（画家のアルゴリズム：奥から手前）に描く。
+  for (let k = cityCandidates.length - 1; k >= 0; k--) {
+    const c = cityCandidates[k];
+    const { i, j, x, z } = c;
+    const dist = dist2[k];
+    const groundY = surfaceHeightAt(x, z);
+    const hSeed = hashCell(i, j, 44);
+    // 高層(12%)・中層(33%)・低層(55%)を混ぜて街らしい高さのばらつきを出す。
+    let h;
+    if (hSeed < 0.12) h = 55 + hashCell(i, j, 45) * 85;
+    else if (hSeed < 0.45) h = 20 + hashCell(i, j, 46) * 26;
+    else h = 8 + hashCell(i, j, 47) * 10;
+    const w = 14 + hashCell(i, j, 48) * 20;
+    const dpt = 14 + hashCell(i, j, 49) * 20;
+    const base = CITY_COLORS[Math.floor(hashCell(i, j, 50) * CITY_COLORS.length)];
+    // 窓の帯は中層以上（高くて目立つビル）にだけ入れてポリゴン数を抑える。
+    const banded = h > 26;
+    const upper = [Math.min(255, base[0] + 46), Math.min(255, base[1] + 46), Math.min(255, base[2] + 50)];
+    drawBox(renderer, x, z, w, dpt, groundY, h, base, upper, [66, 68, 74], banded ? 0.62 : 0, dist);
   }
 }
 
@@ -564,6 +757,51 @@ function localToWorld(out, aircraft, lx, ly, lz) {
   out.y = aircraft.pos.y + b.right.y * lx + b.up.y * ly + b.forward.y * lz;
   out.z = aircraft.pos.z + b.right.z * lx + b.up.z * ly + b.forward.z * lz;
   return out;
+}
+
+const shadowPoints = [];
+for (let i = 0; i < 16; i++) shadowPoints.push(vec3());
+
+/**
+ * 自機の影を地表（水面を含む）に落とす。
+ * Zバッファが無いレンダラなので、呼び出し側（game.js）で必ず
+ * 「地形より後・自機より前」の順に呼ぶこと。高度が上がるほど影を
+ * 大きく・薄くすることで、簡易ながらそれらしい遠近感を出している。
+ */
+export function drawAircraftShadow(renderer, aircraft) {
+  const groundY = surfaceHeightAt(aircraft.pos.x, aircraft.pos.z);
+  const agl = aircraft.pos.y - groundY;
+  if (agl > 450 || agl < -5) return; // 高すぎる/めり込み中は省略して負荷を下げる
+  const alpha = clamp(0.38 * (1 - agl / 450), 0.02, 0.38);
+  if (alpha <= 0.02) return;
+  const centerDist = renderer.distanceTo(vec3(aircraft.pos.x, groundY, aircraft.pos.z));
+  if (centerDist > FAR) return;
+  // 高度に応じて影を大きくする（実際の投影計算ではないが、簡易な近似として十分）。
+  const spread = 1 + agl / 130;
+  const rx = 5.8 * spread;
+  const rz = 3.8 * spread;
+  // 機首方向の水平成分だけを使って影の向きの基底を作る（宙返り中の急なピッチは無視する）。
+  const b = aircraft.basis;
+  let fx = b.forward.x;
+  let fz = b.forward.z;
+  const fl = Math.hypot(fx, fz) || 1;
+  fx /= fl;
+  fz /= fl;
+  const rightX = fz;
+  const rightZ = -fx;
+  for (let i = 0; i < shadowPoints.length; i++) {
+    const a = (i / shadowPoints.length) * Math.PI * 2;
+    const lx = Math.cos(a) * rx;
+    const lz = Math.sin(a) * rz;
+    const p = shadowPoints[i];
+    p.x = aircraft.pos.x + lx * rightX + lz * fx;
+    p.y = groundY + 0.12; // 地表からわずかに浮かせ、地形との継ぎ目のちらつきを避ける
+    p.z = aircraft.pos.z + lx * rightZ + lz * fz;
+  }
+  const ctx = renderer.ctx;
+  ctx.globalAlpha = alpha;
+  renderer.fillPolygon(shadowPoints, 'rgb(8,12,16)');
+  ctx.globalAlpha = 1;
 }
 
 /**
