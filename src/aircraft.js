@@ -32,15 +32,16 @@ export const SPEC = {
   stallAoA: 0.3, // rad
   cd0: 0.03,
   inducedK: 0.05,
-  /** 操縦入力による最大角速度（rad/s）。 */
-  pitchRate: 1.2,
-  rollRate: 2.2,
+  /**
+   * 操縦入力による最大角速度（rad/s）。
+   * 感度調整の一環で 1.2/2.2 から下げた。下げすぎるとループが一周し切れないため、
+   * scratchpad の物理シミュレーションで宙返り成立を確認しながら決めている。
+   */
+  pitchRate: 0.95,
+  rollRate: 1.6,
   yawRate: 0.55,
   /** 横滑りを打ち消す風見安定の強さ。 */
   weathervane: 1.8,
-  /** アシスト時の姿勢制限（rad）。 */
-  assistPitchLimit: 0.95,
-  assistRollLimit: 1.25,
   gravity: 9.81,
 };
 
@@ -138,34 +139,31 @@ export class Aircraft {
       this.beta = 0;
     }
 
-    // 舵の効きは対気速度に依存する（低速では効かない）。
-    const authority = clamp(speed / 55, 0, 1.15);
+    // 舵の効きは対気速度に依存する（低速では効きが落ちる）。
+    // 下限を0→0.35へ引き上げ、低速でも最低限の舵が残るようにした（アーケード的な割り切り）。
+    // 0のままだとループ頂点などで速度が落ちたときに舵が完全に死に、姿勢を保てず失敗するため。
+    const authority = clamp(speed / 55, 0.35, 1.15);
     let pitchCmd = clamp(input.pitch, -1, 1);
     let rollCmd = clamp(input.roll, -1, 1);
     const yawCmd = clamp(input.yaw, -1, 1);
 
     if (this.assist) {
+      // アシストは「ハードな姿勢制限」ではなく「入力がニュートラルのときだけ
+      // 自動で水平に戻す」方式にしている。姿勢角そのものを制限すると、
+      // ピッチ54度・ロール72度あたりで舵が効かなくなり宙返りが物理的に不可能になるため。
       const pitchAngle = Math.asin(clamp(b.forward.y, -1, 1));
       const rollAngle = Math.atan2(-b.right.y, b.up.y);
-      // 宙返りや背面飛行に入らないよう姿勢を滑らかに制限する。
-      // 限界角では操作量の上限を0にし、超過分に比例して戻す指令を与える。
-      const over = (angle, limit) => clamp(-(angle - limit) * 3, -0.7, 0);
-      if (pitchAngle > SPEC.assistPitchLimit) {
-        pitchCmd = Math.min(pitchCmd, over(pitchAngle, SPEC.assistPitchLimit));
-      }
-      if (pitchAngle < -SPEC.assistPitchLimit) {
-        pitchCmd = Math.max(pitchCmd, -over(-pitchAngle, SPEC.assistPitchLimit));
-      }
-      if (rollAngle > SPEC.assistRollLimit) {
-        rollCmd = Math.min(rollCmd, over(rollAngle, SPEC.assistRollLimit));
-      }
-      if (rollAngle < -SPEC.assistRollLimit) {
-        rollCmd = Math.max(rollCmd, -over(-rollAngle, SPEC.assistRollLimit));
-      }
       // 失速保護：迎角が限界に近づいたら機首下げ方向へ制限する。
-      const margin = this.alpha - SPEC.stallAoA * 0.8;
-      if (margin > 0) pitchCmd = Math.min(pitchCmd, clamp(1 - margin * 10, -1, 1));
+      // ただし対気速度が十分あるとき（宙返り中など）は保護をかけない。
+      // 保護をかける場合も、係数を10→5へ緩め、下限を0→0.3にして舵を完全には殺さない
+      // （0のままだと引き起こしの舵が失われ、姿勢が崩れて墜落しやすくなる）。
+      if (speed <= 70) {
+        const margin = this.alpha - SPEC.stallAoA * 0.8;
+        if (margin > 0) pitchCmd = Math.min(pitchCmd, clamp(1 - margin * 5, 0.3, 1));
+      }
       // 入力がないときは水平飛行へ自動的に戻す。
+      // rollAngle は atan2 で ±π 付近まで動くため、背面（±π近傍）でも
+      // -rollAngle 方向へ戻す指令が正しく最短経路（正立側）を向く。
       if (Math.abs(rollCmd) < 0.06) rollCmd = clamp(-rollAngle * 0.6, -0.4, 0.4);
       if (Math.abs(pitchCmd) < 0.06) pitchCmd = clamp(-pitchAngle * 0.45, -0.3, 0.3);
     }
