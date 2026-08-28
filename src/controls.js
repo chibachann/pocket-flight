@@ -57,8 +57,6 @@ export class Controls {
     this.target = { pitch: 0, roll: 0, yaw: 0 };
     /** 'touch' | 'tilt' */
     this.scheme = 'touch';
-    /** 上方向スワイプで機首上げにするか（false なら操縦桿と同じく引き＝上げ）。 */
-    this.invertPitch = false;
     this.sensitivity = 1;
 
     this.stick = { active: false, id: null, ox: 0, oy: 0, x: 0, y: 0 };
@@ -238,8 +236,9 @@ export class Controls {
     if (this.scheme === 'touch') {
       const v = this.stickVector();
       roll = v.x;
-      // 画面下方向がプラスなので、上スワイプで機首上げなら符号を反転する。
-      pitch = this.invertPitch ? v.y : -v.y;
+      // 実機の操縦桿と同じ向きに固定する：指を下へ引く（v.yが正）＝機首上げ。
+      // 画面下方向がプラスなので、そのままpitchに使える。
+      pitch = v.y;
     } else if (this.scheme === 'tilt') {
       const dBeta = this.tiltRaw.beta - this.tiltZero.beta;
       let dGamma = this.tiltRaw.gamma - this.tiltZero.gamma;
@@ -252,11 +251,11 @@ export class Controls {
       const sn = Math.sin(a);
       const tx = dGamma * cs + dBeta * sn;
       const ty = -dGamma * sn + dBeta * cs;
-      // 画面を手前に倒す＝機首下げ、右に傾ける＝右ロール。
-      // 除数を26→34へ上げ、フルデフレクションに必要な傾き角を増やして感度を落とす。
-      pitch = clamp(-ty / 34, -1, 1);
+      // 実機の操縦桿と同じ向きに固定する：画面を手前に倒す（引く）＝機首上げ、
+      // 右に傾ける＝右ロール。除数を26→34へ上げ、フルデフレクションに必要な
+      // 傾き角を増やして感度を落とす。
+      pitch = clamp(ty / 34, -1, 1);
       roll = clamp(tx / 34, -1, 1);
-      if (this.invertPitch) pitch = -pitch;
       // 傾き操作では微小な揺れを無視する。
       if (Math.abs(pitch) < 0.08) pitch = 0;
       if (Math.abs(roll) < 0.08) roll = 0;
