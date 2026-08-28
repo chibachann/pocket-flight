@@ -6,8 +6,13 @@
 
 import { clamp, damp } from './math.js';
 
-/** 仮想スティックの最大移動量（画面短辺に対する比率）。 */
-const STICK_RADIUS_RATIO = 0.17;
+/**
+ * 仮想スティックの最大移動量（画面短辺に対する比率）。
+ * 円形リミットを実ピクセル基準に直した際、横画面でのロール感度が
+ * 従来比で約3.2倍になってしまったため、フルデフレクションに必要な
+ * 指の移動量を増やして感度を落とす方向に広げた（0.17 → 0.26）。
+ */
+const STICK_RADIUS_RATIO = 0.26;
 
 /**
  * 画面の向きごとの操作エリア配置（画面幅・高さに対する比率）。
@@ -22,6 +27,16 @@ const LAYOUT = {
 /** 画面の向きに応じた操作エリアの配置を返す。 */
 export function controlLayout(portrait) {
   return portrait ? LAYOUT.portrait : LAYOUT.landscape;
+}
+
+/**
+ * 中央付近の感度を落とすエクスポネンシャルカーブ。
+ * v は -1〜1 の入力、k は線形成分の比率（1で完全に線形、小さいほど中央が鈍る）。
+ * 端点（v=±1）では常に ±1 を返すため、フルデフレクション自体は変わらない。
+ * これにより微調整で機首を合わせやすく、大きく倒せばしっかり効く操作感になる。
+ */
+function expo(v, k) {
+  return v * (k + (1 - k) * v * v);
 }
 
 /** 画面（表示内容）が自然な向きから何度回転しているか。傾き操作の軸合わせに使う。 */
@@ -208,8 +223,10 @@ export class Controls {
     const dx = ((this.stick.x - this.stick.ox) * r.width) / radius;
     const dy = ((this.stick.y - this.stick.oy) * r.height) / radius;
     const l = Math.hypot(dx, dy);
-    if (l > 1) return { x: dx / l, y: dy / l };
-    return { x: dx, y: dy };
+    const rawX = l > 1 ? dx / l : dx;
+    const rawY = l > 1 ? dy / l : dy;
+    // 中央付近の感度を落とし、微調整をしやすくする（端では入力どおりの最大値）。
+    return { x: expo(rawX, 0.4), y: expo(rawY, 0.4) };
   }
 
   /** 毎フレーム呼び出して入力を更新する。 */
@@ -236,12 +253,16 @@ export class Controls {
       const tx = dGamma * cs + dBeta * sn;
       const ty = -dGamma * sn + dBeta * cs;
       // 画面を手前に倒す＝機首下げ、右に傾ける＝右ロール。
-      pitch = clamp(-ty / 26, -1, 1);
-      roll = clamp(tx / 26, -1, 1);
+      // 除数を26→34へ上げ、フルデフレクションに必要な傾き角を増やして感度を落とす。
+      pitch = clamp(-ty / 34, -1, 1);
+      roll = clamp(tx / 34, -1, 1);
       if (this.invertPitch) pitch = -pitch;
       // 傾き操作では微小な揺れを無視する。
       if (Math.abs(pitch) < 0.08) pitch = 0;
       if (Math.abs(roll) < 0.08) roll = 0;
+      // タッチスティックと同じく、中央付近の感度を落とすカーブを掛ける。
+      pitch = expo(pitch, 0.4);
+      roll = expo(roll, 0.4);
     }
 
     // キーボード（PCでの操作・デバッグ用）。
@@ -259,9 +280,10 @@ export class Controls {
     roll = clamp(roll * this.sensitivity, -1, 1);
 
     // 入力を平滑化して操作をなめらかにする。
-    this.input.pitch = damp(this.input.pitch, pitch, 14, dt);
-    this.input.roll = damp(this.input.roll, roll, 14, dt);
-    this.input.yaw = damp(this.input.yaw, clamp(yaw, -1, 1), 14, dt);
+    // 係数を14→10へ下げ、急な入力変化に対して少し粘り（遅れ）を持たせて過敏さを抑える。
+    this.input.pitch = damp(this.input.pitch, pitch, 10, dt);
+    this.input.roll = damp(this.input.roll, roll, 10, dt);
+    this.input.yaw = damp(this.input.yaw, clamp(yaw, -1, 1), 10, dt);
     return this.input;
   }
 
