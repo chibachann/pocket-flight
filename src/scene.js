@@ -6,7 +6,7 @@
 import { FAR, FOG_START } from './renderer.js';
 import { AIRFIELD_ELEVATION, heightAt, surfaceHeightAt, terrainColor, waterColor } from './terrain.js';
 import { RUNWAY } from './course.js';
-import { clamp, vec3 } from './math.js';
+import { clamp, lerp, vec3 } from './math.js';
 
 /** 太陽方向（正規化済み）。地形の陰影計算と太陽そのものの描画に使う。 */
 const SUN = (() => {
@@ -625,8 +625,17 @@ export function drawApron(renderer) {
   );
 }
 
-/** 街並みの1マスの大きさ(m)。この間隔でビル候補を配置する。 */
-const CITY_CELL = 85;
+/** 建物候補を配置するグリッドのピッチ(m)。 */
+const LOT = 85;
+/**
+ * 道路の格子ピッチ(m)。LOTの3マス分を1街区とし、街区の外周にだけ道路を敷く。
+ * 道路をLOTと同じ間隔で敷くと「区画1マスごとに道路」になって不自然に細かくなる
+ * ため、複数ロットをまとめた単位を街区とすることで、道路網＋街区内に複数棟という
+ * 現実の街に近い密度感にしている。
+ */
+const SUPER = LOT * 3;
+/** 道路の半幅(m)。実効で ROAD_HALF_W*2 の道幅になる。 */
+const ROAD_HALF_W = 5;
 /**
  * ビルを生成する半径。地形が平坦化されている範囲（terrain.jsのAIRFIELD_OUTER=1900m）の
  * 内側に必ず収める。ここを超えて起伏のある地形に建物を置くと、Zバッファが無い都合上
@@ -634,9 +643,46 @@ const CITY_CELL = 85;
  */
 const CITY_MIN_R = 260;
 const CITY_MAX_R = 1750;
-/** 同時に描画するビルの上限（近い順）。低スペック端末でも解像度が落ちすぎないようにする。 */
-const MAX_CITY_BUILDINGS = 55;
+/**
+ * 滑走路の中心線からのクリアランス(m)。この帯には建物・道路・舗装のいずれも置かない。
+ * 離陸開始位置の直近に巨大なビルが立つと視界を圧迫する（実際に破綻していた）ため、
+ * 滑走路本体（halfWidth=30）よりずっと広く余白を取っている。
+ */
+const RUNWAY_CLEAR_X = 350;
+/**
+ * 離着陸の進入経路（滑走路の南北延長線上）の帯。RUNWAY_CLEAR_Xより広いこの帯では
+ * 建物自体は許すが、APPROACH_LOW_MAX_H（ハンガー程度の高さ）までしか許可しない。
+ * 完全に建物なしにすると味気ないが、離陸直後や着陸進入中に正面へ高層ビルが
+ * そびえる構図だけは避けたいための折衷。
+ */
+const APPROACH_CLEAR_X = 600;
+const APPROACH_LOW_MAX_H = 18;
+/**
+ * ダウンタウン（高層ビル密集地）の中心と広がり(m)。
+ * 「飛行場に近いほど低層、遠いほど高層」という基本ルールに加えて、この一点だけ
+ * 高層の当選確率・存在確率を底上げすることでビルの塊＝スカイラインを作る。
+ * RUNWAY_CLEAR_Xの外側かつCITY_MAX_R寄りに置き、高高度からの広域ショットで
+ * 遠景のシルエットとして見えるようにしている。
+ */
+const DOWNTOWN = { x: 850, z: 980 };
+const DOWNTOWN_RADIUS = 380;
+/**
+ * 上限で間引く際、ダウンタウンの候補を優先して残すための下駄(m)。
+ * 単純にカメラからの近い順でcapを切ると、高高度・遠方からの俯瞰では
+ * カメラ直下の街区ばかりが選ばれてダウンタウン（本来スカイラインとして
+ * 見せたい遠くの塊）が候補から漏れてしまう。実距離からこの分だけ差し引いた
+ * 見かけの距離で選抜することで、多少遠くてもダウンタウンを優先的に描画対象へ残す。
+ * 実際の描画順（画家のアルゴリズム）は本来の距離でソートし直すので、
+ * これは「何を描くか」の選抜にのみ影響し、前後関係の破綻は起きない。
+ */
+const DOWNTOWN_PRIORITY_BIAS = 2400;
+/** 単体の建物の最大高さ(m)。ハンガー・管制塔（15〜40m）と隣接しても破綻しない範囲に収める。 */
+const CITY_MAX_HEIGHT = 92;
+/** 同時に描画するビル／街区（舗装・道路）の上限（近い順）。高度に応じて絞る。 */
+const MAX_CITY_BUILDINGS = 48;
+const MAX_CITY_BLOCKS = 22;
 const cityCandidates = [];
+const cityBlocks = [];
 /** ビルの色みのバリエーション。棟ごとにハッシュで1色選ぶ。 */
 const CITY_COLORS = [
   [188, 96, 82],
@@ -648,72 +694,218 @@ const CITY_COLORS = [
   [200, 150, 96],
 ];
 
+/** v が pitch 格子線（道路の中心線）から clearance 以内にあるか。 */
+function nearRoadLine(v, pitch, clearance) {
+  const m = ((v % pitch) + pitch) % pitch;
+  return m < clearance || m > pitch - clearance;
+}
+
+/**
+ * 指定位置の建物に許される最大高さ(m)を返す。
+ * 飛行場中心からの距離が遠いほど高層化を許し、ダウンタウン中心に近いほどさらに
+ * 底上げする。進入経路（approachLow）ではハンガー並みの低さに強制的に抑える。
+ */
+function heightBudgetAt(x, z, approachLow) {
+  const fieldR = Math.hypot(x, z);
+  const farT = clamp((fieldR - CITY_MIN_R) / (CITY_MAX_R - CITY_MIN_R), 0, 1);
+  const downtownT = clamp(1 - Math.hypot(x - DOWNTOWN.x, z - DOWNTOWN.z) / DOWNTOWN_RADIUS, 0, 1);
+  let budget = Math.min(CITY_MAX_HEIGHT, lerp(16, 40, farT) + downtownT * 60);
+  if (approachLow) budget = Math.min(budget, APPROACH_LOW_MAX_H);
+  return budget;
+}
+
 /** 街区のビル候補を、近い順に cap 棟まで集める。 */
 function collectCityBuildings(renderer, cap) {
   cityCandidates.length = 0;
   const cam = renderer.camPos;
-  const ci = Math.floor(cam.x / CITY_CELL);
-  const cj = Math.floor(cam.z / CITY_CELL);
+  const ci = Math.floor(cam.x / LOT);
+  const cj = Math.floor(cam.z / LOT);
   // 遠方まで律儀に走査すると候補が膨らむだけなので、実際に見える範囲に絞る。
   const scanR = Math.min(FAR * 0.5, CITY_MAX_R + 300);
-  const span = Math.ceil(scanR / CITY_CELL);
+  const span = Math.ceil(scanR / LOT);
   for (let j = cj - span; j <= cj + span; j++) {
     for (let i = ci - span; i <= ci + span; i++) {
-      if (hashCell(i, j, 41) > 0.4) continue; // 存在確率（密度）
-      const x = (i + 0.5 + (hashCell(i, j, 42) - 0.5) * 0.6) * CITY_CELL;
-      const z = (j + 0.5 + (hashCell(i, j, 43) - 0.5) * 0.6) * CITY_CELL;
+      const cx = (i + 0.5) * LOT;
+      const cz = (j + 0.5) * LOT;
+      if (Math.abs(cx) < RUNWAY_CLEAR_X) continue; // 滑走路のクリアランス帯には置かない
+      // 存在確率（密度）。ダウンタウン中心に近いほど密度を上げて塊にする。
+      const downtownT = clamp(1 - Math.hypot(cx - DOWNTOWN.x, cz - DOWNTOWN.z) / DOWNTOWN_RADIUS, 0, 1);
+      if (hashCell(i, j, 41) > 0.4 + downtownT * 0.35) continue;
+      const x = cx + (hashCell(i, j, 42) - 0.5) * (LOT - 30);
+      const z = cz + (hashCell(i, j, 43) - 0.5) * (LOT - 30);
+      // 街区を区切る道路（SUPER格子の境界線）の上には置かない。
+      if (nearRoadLine(x, SUPER, ROAD_HALF_W + 9) || nearRoadLine(z, SUPER, ROAD_HALF_W + 9)) continue;
       const r = Math.hypot(x, z);
       if (r < CITY_MIN_R || r > CITY_MAX_R) continue;
-      // 滑走路の帯には置かない。
-      if (Math.abs(x) < 90 && Math.abs(z) < RUNWAY.halfLength + 160) continue;
-      // エプロン・格納庫・管制塔のあたりにも置かない。
-      if (x > -210 && x < -30 && Math.abs(z) < 340) continue;
+      // 滑走路の延長線上（進入経路）かどうか。低くする判定はdrawCityBuilding側で使う。
+      const approachLow = Math.abs(x) < APPROACH_CLEAR_X && Math.abs(z) > RUNWAY.halfLength;
       const dx = x - cam.x;
       const dz = z - cam.z;
       const d2 = dx * dx + dz * dz;
       if (d2 > scanR * scanR) continue;
-      cityCandidates.push({ i, j, x, z, d2 });
+      const downtownT2 = clamp(1 - Math.hypot(x - DOWNTOWN.x, z - DOWNTOWN.z) / DOWNTOWN_RADIUS, 0, 1);
+      cityCandidates.push({ i, j, x, z, d2, approachLow, downtownT: downtownT2 });
     }
   }
-  cityCandidates.sort((a, b) => a.d2 - b.d2);
+  // 選抜はダウンタウン優先の見かけの距離で行い、最終的な描画順は実距離で並べ直す。
+  cityCandidates.sort((a, b) => selectDist(a) - selectDist(b));
   if (cityCandidates.length > cap) cityCandidates.length = cap;
+  cityCandidates.sort((a, b) => a.d2 - b.d2);
+}
+
+/** cap選抜用の見かけの距離。ダウンタウンの候補ほど近く見せて優先的に残す。 */
+function selectDist(c) {
+  return Math.sqrt(c.d2) - c.downtownT * DOWNTOWN_PRIORITY_BIAS;
+}
+
+/** 舗装・道路を敷く街区（SUPERピッチの格子）を、近い順に cap 個まで集める。 */
+function collectCityBlocks(renderer, cap) {
+  cityBlocks.length = 0;
+  const cam = renderer.camPos;
+  const ci = Math.floor(cam.x / SUPER);
+  const cj = Math.floor(cam.z / SUPER);
+  const scanR = Math.min(FAR * 0.5, CITY_MAX_R + 300);
+  const span = Math.ceil(scanR / SUPER) + 1;
+  for (let j = cj - span; j <= cj + span; j++) {
+    for (let i = ci - span; i <= ci + span; i++) {
+      const bx = (i + 0.5) * SUPER;
+      const bz = (j + 0.5) * SUPER;
+      // 街区は外周の道路まで含めて滑走路帯の外に収まっている必要がある。
+      if (Math.abs(bx) < RUNWAY_CLEAR_X + SUPER / 2) continue;
+      const r = Math.hypot(bx, bz);
+      if (r < CITY_MIN_R || r > CITY_MAX_R) continue;
+      const dx = bx - cam.x;
+      const dz = bz - cam.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > scanR * scanR) continue;
+      const downtownT = clamp(1 - Math.hypot(bx - DOWNTOWN.x, bz - DOWNTOWN.z) / DOWNTOWN_RADIUS, 0, 1);
+      cityBlocks.push({ i, j, bx, bz, d2, downtownT });
+    }
+  }
+  // 建物と同様、選抜はダウンタウン優先の見かけの距離で行い、描画順は実距離に戻す。
+  cityBlocks.sort((a, b) => selectDist(a) - selectDist(b));
+  if (cityBlocks.length > cap) cityBlocks.length = cap;
+  cityBlocks.sort((a, b) => a.d2 - b.d2);
+}
+
+/** 街区の舗装色（アスファルト寄りのグレー）。ダウンタウンほど石畳寄りに暗くする。 */
+function blockPavementColor(bx, bz) {
+  const downtownT = clamp(1 - Math.hypot(bx - DOWNTOWN.x, bz - DOWNTOWN.z) / DOWNTOWN_RADIUS, 0, 1);
+  return [lerp(96, 70, downtownT), lerp(98, 72, downtownT), lerp(92, 68, downtownT)];
+}
+
+/** 街区内側の地面を1枚の平面ポリゴンで舗装寄りの色に塗り替える。 */
+function drawBlockPavement(renderer, blk, dist) {
+  const half = SUPER / 2 - ROAD_HALF_W;
+  const y = surfaceHeightAt(blk.bx, blk.bz) + 0.28;
+  const color = blockPavementColor(blk.bx, blk.bz);
+  renderer.fillPolygon(
+    [
+      vec3(blk.bx - half, y, blk.bz - half),
+      vec3(blk.bx + half, y, blk.bz - half),
+      vec3(blk.bx + half, y, blk.bz + half),
+      vec3(blk.bx - half, y, blk.bz + half),
+    ],
+    renderer.fog(color, dist),
+  );
+}
+
+/**
+ * 街区の西辺・南辺に道路を1枚の平面ポリゴンで敷く（drawRunwayと同じ、地表よりわずかに
+ * 高い平面）。隣接する街区がそれぞれ自分の西・南だけを描くことで、格子の各線が
+ * 二重に描かれないようにしている。
+ */
+function drawRoadEdge(renderer, blk, edge, dist) {
+  const color = renderer.fog([58, 58, 62], dist);
+  if (edge === 'w') {
+    const x = blk.bx - SUPER / 2;
+    const y = surfaceHeightAt(x, blk.bz) + 0.22;
+    renderer.fillPolygon(
+      [
+        vec3(x - ROAD_HALF_W, y, blk.bz - SUPER / 2),
+        vec3(x + ROAD_HALF_W, y, blk.bz - SUPER / 2),
+        vec3(x + ROAD_HALF_W, y, blk.bz + SUPER / 2),
+        vec3(x - ROAD_HALF_W, y, blk.bz + SUPER / 2),
+      ],
+      color,
+    );
+  } else {
+    const z = blk.bz - SUPER / 2;
+    const y = surfaceHeightAt(blk.bx, z) + 0.22;
+    renderer.fillPolygon(
+      [
+        vec3(blk.bx - SUPER / 2, y, z - ROAD_HALF_W),
+        vec3(blk.bx + SUPER / 2, y, z - ROAD_HALF_W),
+        vec3(blk.bx + SUPER / 2, y, z + ROAD_HALF_W),
+        vec3(blk.bx - SUPER / 2, y, z + ROAD_HALF_W),
+      ],
+      color,
+    );
+  }
+}
+
+/** ビルを1棟描く。高さはheightBudgetAtの上限内でハッシュから決める。 */
+function drawCityBuilding(renderer, c, dist) {
+  const { i, j, x, z, approachLow } = c;
+  const groundY = surfaceHeightAt(x, z);
+  const budget = heightBudgetAt(x, z, approachLow);
+  const downtownT = clamp(1 - Math.hypot(x - DOWNTOWN.x, z - DOWNTOWN.z) / DOWNTOWN_RADIUS, 0, 1);
+  const hSeed = hashCell(i, j, 44);
+  // 高層・中層・低層を混ぜて街らしい高さのばらつきを出す。高層の当選率は
+  // ダウンタウン中心ほど上げ、スカイラインの塊を作る。
+  const highChance = 0.12 + downtownT * 0.4;
+  let h;
+  if (hSeed < highChance) h = budget * (0.5 + hashCell(i, j, 45) * 0.5);
+  else if (hSeed < highChance + 0.35) h = 16 + hashCell(i, j, 46) * Math.max(4, budget * 0.4 - 16);
+  else h = 8 + hashCell(i, j, 47) * 8;
+  h = Math.min(h, budget);
+  const w = 14 + hashCell(i, j, 48) * 20;
+  const dpt = 14 + hashCell(i, j, 49) * 20;
+  const base = CITY_COLORS[Math.floor(hashCell(i, j, 50) * CITY_COLORS.length)];
+  // 窓の帯は中層以上（高くて目立つビル）にだけ入れてポリゴン数を抑える。
+  const banded = h > 26;
+  const upper = [Math.min(255, base[0] + 46), Math.min(255, base[1] + 46), Math.min(255, base[2] + 50)];
+  drawBox(renderer, x, z, w, dpt, groundY, h, base, upper, [66, 68, 74], banded ? 0.62 : 0, dist);
 }
 
 /**
  * 街並みを描く（飛行場周辺の平坦地のみ、詳細はCITY_MAX_R/MIN_Rのコメント参照）。
- * 配置はhashCellによる決定的な擬似乱数で、毎回同じ街になる。高層・中層・低層を
- * 混ぜ、地表の実際の標高（surfaceHeightAt）に載せることで、平坦化のブレンド境界
- * （AIRFIELD_INNER〜OUTERの間）でも建物が地面から浮いたり埋まったりしないようにする。
+ * 配置はhashCellによる決定的な擬似乱数で、毎回同じ街になる。地表の実際の標高
+ * （surfaceHeightAt）に載せることで、平坦化のブレンド境界（AIRFIELD_INNER〜OUTERの間）
+ * でも建物・道路・舗装が地面から浮いたり埋まったりしないようにする。
  *
- * 高度に応じて描画棟数の上限を絞る（drawTreesの高度カリングと同じ考え方）。
- * 高高度から見ると個々のビルはほとんど視認できないのに、見渡せる範囲が
- * 広がる分だけ候補数は増えてしまうため、上限を下げてコストを頭打ちにする。
+ * 道路網・街区の舗装・ビルをすべて1本の距離順（画家のアルゴリズム：奥から手前）の
+ * リストにまとめて描く。種類ごとにばらばらにソートして描くと、種類の切り替わり目で
+ * 手前・奥の関係が壊れる（近い道路が遠いビルの後ろに塗られてしまう等）ため。
+ *
+ * 高度に応じて描画上限を絞る（drawTreesの高度カリングと同じ考え方）。高高度から
+ * 見ると個々の建物・道路はほとんど視認できないのに、見渡せる範囲が広がる分だけ
+ * 候補数は増えてしまうため、上限を下げてコストを頭打ちにする。
  */
 export function drawCity(renderer) {
   const camY = renderer.camPos.y;
-  const cap = camY > 700 ? 16 : camY > 350 ? 34 : MAX_CITY_BUILDINGS;
-  collectCityBuildings(renderer, cap);
-  const dist2 = [];
-  for (const c of cityCandidates) dist2.push(Math.sqrt(c.d2));
-  // 遠い順（画家のアルゴリズム：奥から手前）に描く。
-  for (let k = cityCandidates.length - 1; k >= 0; k--) {
-    const c = cityCandidates[k];
-    const { i, j, x, z } = c;
-    const dist = dist2[k];
-    const groundY = surfaceHeightAt(x, z);
-    const hSeed = hashCell(i, j, 44);
-    // 高層(12%)・中層(33%)・低層(55%)を混ぜて街らしい高さのばらつきを出す。
-    let h;
-    if (hSeed < 0.12) h = 55 + hashCell(i, j, 45) * 85;
-    else if (hSeed < 0.45) h = 20 + hashCell(i, j, 46) * 26;
-    else h = 8 + hashCell(i, j, 47) * 10;
-    const w = 14 + hashCell(i, j, 48) * 20;
-    const dpt = 14 + hashCell(i, j, 49) * 20;
-    const base = CITY_COLORS[Math.floor(hashCell(i, j, 50) * CITY_COLORS.length)];
-    // 窓の帯は中層以上（高くて目立つビル）にだけ入れてポリゴン数を抑える。
-    const banded = h > 26;
-    const upper = [Math.min(255, base[0] + 46), Math.min(255, base[1] + 46), Math.min(255, base[2] + 50)];
-    drawBox(renderer, x, z, w, dpt, groundY, h, base, upper, [66, 68, 74], banded ? 0.62 : 0, dist);
+  const buildingCap = camY > 700 ? 14 : camY > 350 ? 28 : MAX_CITY_BUILDINGS;
+  const blockCap = camY > 700 ? 8 : camY > 350 ? 14 : MAX_CITY_BLOCKS;
+  collectCityBuildings(renderer, buildingCap);
+  collectCityBlocks(renderer, blockCap);
+
+  const items = [];
+  for (const blk of cityBlocks) {
+    const d = Math.sqrt(blk.d2);
+    items.push({ kind: 'pave', blk, d });
+    items.push({ kind: 'roadW', blk, d });
+    items.push({ kind: 'roadS', blk, d });
+  }
+  for (const c of cityCandidates) {
+    items.push({ kind: 'bld', c, d: Math.sqrt(c.d2) });
+  }
+  items.sort((a, b) => b.d - a.d);
+
+  for (const it of items) {
+    if (it.kind === 'pave') drawBlockPavement(renderer, it.blk, it.d);
+    else if (it.kind === 'roadW') drawRoadEdge(renderer, it.blk, 'w', it.d);
+    else if (it.kind === 'roadS') drawRoadEdge(renderer, it.blk, 's', it.d);
+    else drawCityBuilding(renderer, it.c, it.d);
   }
 }
 
