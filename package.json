@@ -1,0 +1,15 @@
+{
+  "name": "pocket-flight",
+  "version": "1.0.0",
+  "description": "スマホ向けの簡易フライトシミュレーター。依存ライブラリ・ビルド工程なしで動くブラウザゲーム。",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "dev": "node scripts/serve.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
