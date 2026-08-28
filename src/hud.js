@@ -4,7 +4,7 @@
  */
 
 import { clamp, pitchOf, rollOf, headingOf } from './math.js';
-import { THROTTLE_AREA } from './controls.js';
+import { controlLayout } from './controls.js';
 
 const FONT = "600 %FPX% ui-monospace, SFMono-Regular, Menlo, 'Roboto Mono', monospace";
 
@@ -153,7 +153,8 @@ function drawHeadingTape(ctx, renderer, aircraft, s) {
   const w = Math.min(renderer.width * 0.5, 400 * s);
   const h = 22 * s;
   const x = renderer.width / 2 - w / 2;
-  const y = 8 * s;
+  // 縦画面は幅が狭く、画面右上のHTMLボタン列と重なる。その分だけ下げる。
+  const y = (renderer.portrait ? 46 * renderer.dpr : 0) + 8 * s;
   let hdg = (headingOf(aircraft.basis) * 180) / Math.PI;
   if (hdg < 0) hdg += 360;
 
@@ -192,10 +193,11 @@ function drawHeadingTape(ctx, renderer, aircraft, s) {
 }
 
 /** スロットルスライダーを描く。 */
-function drawThrottle(ctx, renderer, aircraft, s) {
-  const x0 = THROTTLE_AREA.x0 * renderer.width;
-  const y0 = THROTTLE_AREA.y0 * renderer.height;
-  const y1 = THROTTLE_AREA.y1 * renderer.height;
+function drawThrottle(ctx, renderer, aircraft, s, layout) {
+  const area = layout.throttle;
+  const x0 = area.x0 * renderer.width;
+  const y0 = area.y0 * renderer.height;
+  const y1 = area.y1 * renderer.height;
   const barW = 26 * s;
   const bx = x0 + (renderer.width - x0) / 2 - barW / 2;
   ctx.fillStyle = 'rgba(6, 18, 26, 0.45)';
@@ -274,7 +276,8 @@ function drawTargetPointer(ctx, renderer, target, s) {
     // 画面外なら中心からの方向で縁に矢印を出す。
     const ang = Math.atan2(-y, x) + (z > 0 ? 0 : Math.PI);
     const rx = renderer.width * 0.38;
-    const ry = renderer.height * 0.36;
+    // 縦画面で矢印が縦に離れすぎないよう、画面幅でも頭打ちにする。
+    const ry = Math.min(renderer.height * 0.36, renderer.width * 0.5);
     sx = cx + Math.cos(ang) * rx;
     sy = cy + Math.sin(ang) * ry;
     ctx.save();
@@ -320,7 +323,8 @@ function drawWarnings(ctx, renderer, aircraft, time, s) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.font = font(17 * s);
-  let y = renderer.height * 0.72;
+  // 縦画面では下側が操作エリアなので、警告はやや上に出す。
+  let y = renderer.height * (renderer.portrait ? 0.66 : 0.72);
   for (const [text, color] of msgs) {
     ctx.fillStyle = color;
     ctx.fillText(text, renderer.width / 2, y);
@@ -334,7 +338,10 @@ function drawWarnings(ctx, renderer, aircraft, time, s) {
  */
 export function drawHud(renderer, aircraft, controls, status) {
   const ctx = renderer.ctx;
-  const s = Math.max(renderer.height / 620, 0.75);
+  // 基準スケールは画面の短辺で決める（横画面では高さと同じ）。
+  // 縦画面で高さを基準にすると計器が画面幅からはみ出すため。
+  const s = Math.max(Math.min(renderer.width, renderer.height) / 620, 0.75);
+  const layout = controlLayout(renderer.portrait);
   ctx.save();
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
@@ -346,21 +353,15 @@ export function drawHud(renderer, aircraft, controls, status) {
   const pw = 92 * s;
   const ph = 46 * s;
   const midY = renderer.height / 2 - ph / 2;
+  // 縦画面ではスロットルが画面下側にあるので、右の計器を画面端まで寄せられる。
+  const rightX = renderer.portrait
+    ? renderer.width - pw - 10 * s
+    : layout.throttle.x0 * renderer.width - pw - 10 * s;
   panel(ctx, 10 * s, midY, pw, ph, s, '対気速度 SPD', String(Math.round(aircraft.speed * 3.6)), 'km/h');
+  panel(ctx, rightX, midY, pw, ph, s, '高度 ALT', String(Math.round(aircraft.altitude)), 'm');
   panel(
     ctx,
-    renderer.width - pw - (renderer.width - THROTTLE_AREA.x0 * renderer.width) - 10 * s,
-    midY,
-    pw,
-    ph,
-    s,
-    '高度 ALT',
-    String(Math.round(aircraft.altitude)),
-    'm',
-  );
-  panel(
-    ctx,
-    renderer.width - pw - (renderer.width - THROTTLE_AREA.x0 * renderer.width) - 10 * s,
+    rightX,
     midY + ph + 6 * s,
     pw,
     ph * 0.78,
@@ -371,7 +372,7 @@ export function drawHud(renderer, aircraft, controls, status) {
     aircraft.verticalSpeed < -12 ? '#ff9f43' : undefined,
   );
 
-  drawThrottle(ctx, renderer, aircraft, s);
+  drawThrottle(ctx, renderer, aircraft, s, layout);
   drawStick(ctx, renderer, controls, s);
 
   // 左上のミッション情報

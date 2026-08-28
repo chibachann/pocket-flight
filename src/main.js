@@ -18,7 +18,6 @@ const el = {
   menu: document.getElementById('menu'),
   pause: document.getElementById('pause'),
   result: document.getElementById('result'),
-  rotate: document.getElementById('rotate'),
   topbar: document.getElementById('topbar'),
   resultTitle: document.getElementById('result-title'),
   resultMessage: document.getElementById('result-message'),
@@ -71,12 +70,6 @@ function showOverlay(name) {
   controls.enabled = name === null;
 }
 
-/** 端末の向きに応じて案内を出す。 */
-function updateOrientationHint() {
-  const portrait = window.innerHeight > window.innerWidth * 1.05;
-  el.rotate.classList.toggle('hidden', !portrait || game.state === 'ready');
-}
-
 /** ゲームを開始する。 */
 function startGame() {
   audio.start();
@@ -87,7 +80,6 @@ function startGame() {
   if (settings.scheme === 'tilt') controls.calibrateTilt();
   game.start(settings.mode);
   showOverlay(null);
-  updateOrientationHint();
 }
 
 /** リザルト画面を表示する。 */
@@ -149,13 +141,10 @@ window.addEventListener('keydown', (e) => {
 
 window.addEventListener('resize', () => {
   renderer.resize();
-  updateOrientationHint();
 });
+// 回転直後はまだ旧サイズが返ることがあるため、少し待ってから測り直す。
 window.addEventListener('orientationchange', () => {
-  window.setTimeout(() => {
-    renderer.resize();
-    updateOrientationHint();
-  }, 250);
+  window.setTimeout(() => renderer.resize(), 250);
 });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && game.state === 'flying') {
@@ -172,7 +161,6 @@ window.pocketFlight = { game, renderer, controls, audio, settings };
 controls.attach();
 renderer.resize();
 showOverlay('menu');
-updateOrientationHint();
 
 let last = performance.now();
 let reported = false;
