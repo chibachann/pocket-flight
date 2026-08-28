@@ -4,16 +4,76 @@
  */
 
 import { FAR, FOG_START } from './renderer.js';
-import { AIRFIELD_ELEVATION, surfaceHeightAt, terrainColor } from './terrain.js';
+import { AIRFIELD_ELEVATION, heightAt, surfaceHeightAt, terrainColor, waterColor } from './terrain.js';
 import { RUNWAY } from './course.js';
 import { clamp, vec3 } from './math.js';
 
-/** 太陽方向（正規化済み）。地形の陰影計算に使う。 */
+/** 太陽方向（正規化済み）。地形の陰影計算と太陽そのものの描画に使う。 */
 const SUN = (() => {
   const v = vec3(0.48, 0.72, -0.5);
   const l = Math.hypot(v.x, v.y, v.z);
   return vec3(v.x / l, v.y / l, v.z / l);
 })();
+
+/**
+ * 太陽を光芒付きの円で描く。
+ * 太陽は無限遠にあるものとして扱い、方向ベクトルをそのままカメラ空間へ
+ * 射影する（位置ではなく向きなので camPos は引かない）。地形より先に
+ * 塗ることで、山の裏に回ったときは後から描かれる地形に自然に隠れる。
+ */
+export function drawSun(renderer) {
+  const camX = SUN.x * renderer.camRight.x + SUN.y * renderer.camRight.y + SUN.z * renderer.camRight.z;
+  const camY = SUN.x * renderer.camUp.x + SUN.y * renderer.camUp.y + SUN.z * renderer.camUp.z;
+  const camZ = SUN.x * renderer.camForward.x + SUN.y * renderer.camForward.y + SUN.z * renderer.camForward.z;
+  if (camZ < 0.05) return; // 太陽が背後にあるときは描かない
+  const sx = renderer.width / 2 + (camX / camZ) * renderer.focal;
+  const sy = renderer.height / 2 - (camY / camZ) * renderer.focal;
+  // ハローが画面外にはみ出す分の余裕を持たせて、緩めの範囲外判定にする。
+  const margin = renderer.width * 0.35;
+  if (sx < -margin || sx > renderer.width + margin || sy < -margin || sy > renderer.height + margin) return;
+
+  const ctx = renderer.ctx;
+  const r = Math.min(renderer.width, renderer.height) * 0.075;
+
+  // 淡いハロー（空気感を出す大きな光暈）。
+  const halo = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 4.5);
+  halo.addColorStop(0, 'rgba(255,250,230,0.30)');
+  halo.addColorStop(0.4, 'rgba(255,244,210,0.10)');
+  halo.addColorStop(1, 'rgba(255,244,210,0)');
+  ctx.fillStyle = halo;
+  ctx.beginPath();
+  ctx.arc(sx, sy, r * 4.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 十字の光芒。加算合成で薄く重ね、コストは矩形2枚だけに抑える。
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const flareLen = r * 7;
+  const flareW = r * 0.16;
+  const gh = ctx.createLinearGradient(sx - flareLen, sy, sx + flareLen, sy);
+  gh.addColorStop(0, 'rgba(255,244,210,0)');
+  gh.addColorStop(0.5, 'rgba(255,244,210,0.22)');
+  gh.addColorStop(1, 'rgba(255,244,210,0)');
+  ctx.fillStyle = gh;
+  ctx.fillRect(sx - flareLen, sy - flareW / 2, flareLen * 2, flareW);
+  const gv = ctx.createLinearGradient(sx, sy - flareLen, sx, sy + flareLen);
+  gv.addColorStop(0, 'rgba(255,244,210,0)');
+  gv.addColorStop(0.5, 'rgba(255,244,210,0.22)');
+  gv.addColorStop(1, 'rgba(255,244,210,0)');
+  ctx.fillStyle = gv;
+  ctx.fillRect(sx - flareW / 2, sy - flareLen, flareW, flareLen * 2);
+  ctx.restore();
+
+  // 太陽本体。
+  const core = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+  core.addColorStop(0, 'rgba(255,255,246,1)');
+  core.addColorStop(0.7, 'rgba(255,236,176,0.95)');
+  core.addColorStop(1, 'rgba(255,222,138,0)');
+  ctx.fillStyle = core;
+  ctx.beginPath();
+  ctx.arc(sx, sy, r, 0, Math.PI * 2);
+  ctx.fill();
+}
 
 /**
  * 地形のLODリング定義。
@@ -35,6 +95,8 @@ const ringData = RINGS.map((r) => {
     worldX: new Float64Array(n),
     worldZ: new Float64Array(n),
     height: new Float64Array(n * n),
+    // 水面の深さ表現用に、0未満へクランプする前の生の標高も別途保持する。
+    rawHeight: new Float64Array(n * n),
     camX: new Float64Array(n * n),
     camY: new Float64Array(n * n),
     camZ: new Float64Array(n * n),
@@ -75,8 +137,12 @@ export function drawTerrain(renderer) {
       for (let i = 0; i < n; i++) {
         const idx = j * n + i;
         const wx = d.worldX[i];
-        const h = surfaceHeightAt(wx, wz);
+        // surfaceHeightAt は内部で heightAt を呼ぶだけなので、水深の色分けに使う
+        // 生の標高（海面下は負）も欲しい今回は heightAt を直接呼んで二重計算を避ける。
+        const raw = heightAt(wx, wz);
+        const h = raw > 0 ? raw : 0;
         d.height[idx] = h;
+        d.rawHeight[idx] = raw;
         const dx = wx - cam.x;
         const dy = h - cam.y;
         const dz = wz - cam.z;
@@ -137,17 +203,22 @@ function drawRing(renderer, k) {
       if (z0 < 0.6 && z1 < 0.6 && z2 < 0.6 && z3 < 0.6) continue;
       const depth = (z0 + z1 + z2 + z3) * 0.25;
       if (depth > FAR) continue;
-      drawList.push(i00, i10, i11, i01, depth);
+      // cx, cz（セル中心のワールド座標）は水面のきらめき計算にも使うのでここで持たせておく。
+      drawList.push(i00, i10, i11, i01, depth, cx, cz);
     }
   }
 
-  const count = drawList.length / 5;
+  const STRIDE = 7;
+  const count = drawList.length / STRIDE;
   const order = [];
   for (let c = 0; c < count; c++) order.push(c);
-  order.sort((a, b) => drawList[b * 5 + 4] - drawList[a * 5 + 4]);
+  order.sort((a, b) => drawList[b * STRIDE + 4] - drawList[a * STRIDE + 4]);
+
+  const cam = renderer.camPos;
+  const sunHLen = Math.hypot(SUN.x, SUN.z) || 1;
 
   for (let o = 0; o < order.length; o++) {
-    const base = order[o] * 5;
+    const base = order[o] * STRIDE;
     for (let v = 0; v < 4; v++) {
       const idx = drawList[base + v];
       quad[v].x = d.camX[idx];
@@ -166,7 +237,33 @@ function drawRing(renderer, k) {
     const nl = Math.hypot(nx, cell, nz);
     const shade = clamp((nx / nl) * SUN.x + (cell / nl) * SUN.y + (nz / nl) * SUN.z, 0, 1);
     const slope = clamp(Math.hypot(nx, nz) / cell, 0, 1);
-    const rgb = terrainColor(avgH, slope, avgH <= 0.01 ? 0.62 : shade);
+
+    let rgb;
+    if (avgH <= 0.01) {
+      // 水面：生の標高（負値）から水深を求め、浅瀬〜深海のグラデーションにする。
+      const r00 = d.rawHeight[drawList[base]];
+      const r10 = d.rawHeight[drawList[base + 1]];
+      const r11 = d.rawHeight[drawList[base + 2]];
+      const r01 = d.rawHeight[drawList[base + 3]];
+      const depthM = Math.max(0, -(r00 + r10 + r11 + r01) * 0.25);
+      // 太陽方向のきらめき：カメラからセルへの水平方向が太陽の方位に近いセルだけを
+      // 明るくする。狭い角度のコーンにした上でセルごとの疑似乱数で間引き、
+      // 滑らかな帯ではなく粒状の反射（グリッターパス）に見せる。
+      const cxw = drawList[base + 5];
+      const czw = drawList[base + 6];
+      const dxw = cxw - cam.x;
+      const dzw = czw - cam.z;
+      const distH = Math.hypot(dxw, dzw) || 1;
+      const align = (dxw * SUN.x + dzw * SUN.z) / (distH * sunHLen);
+      let sparkle = 0;
+      if (align > 0.9) {
+        const glint = hashCell(Math.round(cxw / 26), Math.round(czw / 26), 21);
+        if (glint > 0.5) sparkle = ((align - 0.9) * 10) ** 2;
+      }
+      rgb = waterColor(depthM, 0.5 + shade * 0.5 + sparkle);
+    } else {
+      rgb = terrainColor(avgH, slope, shade);
+    }
     renderer.fillCameraPolygon(quad, 4, renderer.fog(rgb, drawList[base + 4]), true);
   }
 }
