@@ -28,8 +28,12 @@ jobs:
       - name: リポジトリを取得
         uses: actions/checkout@v4
 
-      - name: Pages の設定を読み込む
+      # enablement: true は Pages が未設定でも自動で有効化する。
+      # 公開リポジトリ（またはPro以上のプラン）であることが前提。
+      - name: Pages を設定する
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: 静的ファイルをアップロード
         uses: actions/upload-pages-artifact@v3
