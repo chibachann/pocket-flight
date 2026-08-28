@@ -146,6 +146,10 @@ export class Aircraft {
     let pitchCmd = clamp(input.pitch, -1, 1);
     let rollCmd = clamp(input.roll, -1, 1);
     const yawCmd = clamp(input.yaw, -1, 1);
+    // 失速保護で加工される前の、パイロットの生のピッチ入力。
+    // ロール自動復帰を弱めるかどうかの判定に使う（「操縦の意図」を見たいので、
+    // 保護で絞られた後のpitchCmdではなくこちらを使う）。
+    const pitchInput = pitchCmd;
 
     if (this.assist) {
       // アシストは「ハードな姿勢制限」ではなく「入力がニュートラルのときだけ
@@ -161,10 +165,18 @@ export class Aircraft {
         const margin = this.alpha - SPEC.stallAoA * 0.8;
         if (margin > 0) pitchCmd = Math.min(pitchCmd, clamp(1 - margin * 5, 0.3, 1));
       }
+      // ロールのニュートラル判定だけでrollCmdを自動復帰させると、宙返り中
+      // （ピッチをフルに入れている間）でも背面通過の瞬間にrollAngleが±π付近になり
+      // 「正立へ戻せ」という指令が働いてしまう。これが宙返りの経路を蛇行させていた。
+      // ピッチ入力が大きいほど「今は意図的に姿勢を変えている最中」とみなし、
+      // ロール自動復帰のゲインを0まで落とす。ピッチを戻せば通常どおり復帰も効く。
+      // しきい値0.6は「ピッチをそこそこ強く入れたら宙返り中とみなす」目安で、
+      // 検証スクリプトでOFF相当のクリーンな一回転になることを確認して決めた。
+      const levelGain = 1 - Math.min(Math.abs(pitchInput) / 0.6, 1);
       // 入力がないときは水平飛行へ自動的に戻す。
       // rollAngle は atan2 で ±π 付近まで動くため、背面（±π近傍）でも
       // -rollAngle 方向へ戻す指令が正しく最短経路（正立側）を向く。
-      if (Math.abs(rollCmd) < 0.06) rollCmd = clamp(-rollAngle * 0.6, -0.4, 0.4);
+      if (Math.abs(rollCmd) < 0.06) rollCmd = clamp(-rollAngle * 0.6 * levelGain, -0.4, 0.4);
       if (Math.abs(pitchCmd) < 0.06) pitchCmd = clamp(-pitchAngle * 0.45, -0.3, 0.3);
     }
 
