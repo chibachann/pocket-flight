@@ -28,9 +28,21 @@ const FIXED_DT = 1 / 120;
 /** 1フレームで進める最大シミュレーション時間（秒）。 */
 const MAX_FRAME = 0.1;
 
-/** モードごとの設定。 */
+/**
+ * 離陸開始位置を滑走路南端から少し内側に取るための余白（m）。
+ * 端ぎりぎりに置くと地形の平坦化境界やカメラの初期位置と噛み合わないため、
+ * 滑走路全長のうち手前に少し余裕を持たせている。
+ */
+const TAKEOFF_START_MARGIN = 50;
+
+/**
+ * モードごとの設定。
+ * timeLimitは離陸から着陸までの制限時間。以前は空中巡航状態から始まっていたが、
+ * 滑走路から加速して離陸するようになった分、離陸に要する時間（目安10秒前後）を
+ * 加味して75秒→90秒に延長した。
+ */
 export const MODES = {
-  timeattack: { label: 'タイムアタック', gates: 8, timeLimit: 75, gateBonus: 15 },
+  timeattack: { label: 'タイムアタック', gates: 8, timeLimit: 90, gateBonus: 15 },
   free: { label: 'フリーフライト', gates: 6, timeLimit: 0, gateBonus: 0 },
 };
 
@@ -75,12 +87,18 @@ export class Game {
     this.landingPhase = false;
     this.toast = '';
     this.toastAlpha = 0;
-    this.aircraft.reset(0, 420, -1600, 0, 95);
-    this.controls.input.throttle = 0.8;
+    // 滑走路南端に静止した状態から開始する。北（+Z）向きに加速して離陸する。
+    const startZ = RUNWAY.centerZ - RUNWAY.halfLength + TAKEOFF_START_MARGIN;
+    this.aircraft.reset(RUNWAY.centerX, RUNWAY.elevation + 1.5, startZ, RUNWAY.heading, 0);
+    // reset() はデフォルトでスロットル・回転数を0.75にするが、離陸は停止状態から
+    // プレイヤー自身がスロットルを上げて加速する体験にしたいので0で上書きする。
+    this.aircraft.throttle = 0;
+    this.aircraft.rpm = 0;
+    this.controls.input.throttle = 0;
     this.camInit = false;
     this._accum = 0;
     this.state = 'flying';
-    this.setToast('離陸済み・リングへ向かえ');
+    this.setToast('スロットルを上げて離陸せよ');
   }
 
   /** 中央に表示する短いメッセージを設定する。 */

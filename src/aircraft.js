@@ -26,7 +26,16 @@ import { groundHeightAt } from './terrain.js';
 export const SPEC = {
   mass: 1200, // kg
   wingArea: 16, // m^2
-  maxThrust: 4600, // N
+  /**
+   * 最大推力（N）。4600→8000へ引き上げた。
+   * resolveGround() の接地中ブレーキ（vel *= 0.999 を毎物理ステップ適用）が
+   * 実質的な転がり摩擦として働き、加速度に応じた終端速度に収束する挙動になる。
+   * 4600Nのままだと終端速度が約30m/sに留まり、離陸速度（目安32〜38m/s）まで
+   * 全く届かなかった。8000Nならスロットル全開・離陸速度32m/s付近での
+   * ローテーションで滑走開始から約10.6秒・滑走距離約230mで浮上する
+   * （scratchpadでの物理シミュレーションで確認、滑走路全長1350mに対して十分な余裕）。
+   */
+  maxThrust: 8000, // N
   cl0: 0.15,
   clAlpha: 5.0, // 1/rad
   stallAoA: 0.3, // rad
@@ -217,7 +226,15 @@ export class Aircraft {
     const sinkRate = -this.vel.y;
     const speed = len(this.vel);
     // カジュアル向けに接地条件はやや甘めにしている。
-    const gentle = onRunway && sinkRate < 7 && roll < 0.35 && pitch > -0.2 && pitch < 0.45 && speed < 110;
+    // ピッチについては2段構えで緩めた。
+    //  1) 上限を0.45→0.7（約40度）に引き上げ、離陸のローテーション（引き起こし）で
+    //     機首を大きく上げても、まだ浮き上がりきっていない一瞬で墜落判定にならないようにした。
+    //  2) 対気速度が45m/s未満（=まだ加速中、離陸速度32〜38m/sに満たない）のときは
+    //     ピッチの上下限チェック自体を行わない。0.7まで緩めただけでは、早すぎるタイミングで
+    //     機首を上げ続けた場合にまだ墜落し得るため。沈下率の条件は残るので、
+    //     機首を下げて地面に突っ込むような操作は引き続き墜落として扱われる。
+    const pitchOk = speed < 45 || (pitch > -0.2 && pitch < 0.7);
+    const gentle = onRunway && sinkRate < 7 && roll < 0.35 && pitchOk && speed < 110;
     if (!gentle) {
       this.crashed = true;
       this.onGround = true;
