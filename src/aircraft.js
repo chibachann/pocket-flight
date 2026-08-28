@@ -65,8 +65,6 @@ export class Aircraft {
     this.stalling = false;
     this.crashed = false;
     this.onGround = false;
-    /** アシスト（自動水平・失速保護）の有効・無効。 */
-    this.assist = true;
     // 作業用ベクトル（毎フレームの確保を避ける）。
     this._f = vec3();
     this._t = vec3();
@@ -146,39 +144,16 @@ export class Aircraft {
     let pitchCmd = clamp(input.pitch, -1, 1);
     let rollCmd = clamp(input.roll, -1, 1);
     const yawCmd = clamp(input.yaw, -1, 1);
-    // 失速保護で加工される前の、パイロットの生のピッチ入力。
-    // ロール自動復帰を弱めるかどうかの判定に使う（「操縦の意図」を見たいので、
-    // 保護で絞られた後のpitchCmdではなくこちらを使う）。
-    const pitchInput = pitchCmd;
 
-    if (this.assist) {
-      // アシストは「ハードな姿勢制限」ではなく「入力がニュートラルのときだけ
-      // 自動で水平に戻す」方式にしている。姿勢角そのものを制限すると、
-      // ピッチ54度・ロール72度あたりで舵が効かなくなり宙返りが物理的に不可能になるため。
-      const pitchAngle = Math.asin(clamp(b.forward.y, -1, 1));
-      const rollAngle = Math.atan2(-b.right.y, b.up.y);
-      // 失速保護：迎角が限界に近づいたら機首下げ方向へ制限する。
-      // ただし対気速度が十分あるとき（宙返り中など）は保護をかけない。
-      // 保護をかける場合も、係数を10→5へ緩め、下限を0→0.3にして舵を完全には殺さない
-      // （0のままだと引き起こしの舵が失われ、姿勢が崩れて墜落しやすくなる）。
-      if (speed <= 70) {
-        const margin = this.alpha - SPEC.stallAoA * 0.8;
-        if (margin > 0) pitchCmd = Math.min(pitchCmd, clamp(1 - margin * 5, 0.3, 1));
-      }
-      // ロールのニュートラル判定だけでrollCmdを自動復帰させると、宙返り中
-      // （ピッチをフルに入れている間）でも背面通過の瞬間にrollAngleが±π付近になり
-      // 「正立へ戻せ」という指令が働いてしまう。これが宙返りの経路を蛇行させていた。
-      // ピッチ入力が大きいほど「今は意図的に姿勢を変えている最中」とみなし、
-      // ロール自動復帰のゲインを0まで落とす。ピッチを戻せば通常どおり復帰も効く。
-      // しきい値0.6は「ピッチをそこそこ強く入れたら宙返り中とみなす」目安で、
-      // 検証スクリプトでOFF相当のクリーンな一回転になることを確認して決めた。
-      const levelGain = 1 - Math.min(Math.abs(pitchInput) / 0.6, 1);
-      // 入力がないときは水平飛行へ自動的に戻す。
-      // rollAngle は atan2 で ±π 付近まで動くため、背面（±π近傍）でも
-      // -rollAngle 方向へ戻す指令が正しく最短経路（正立側）を向く。
-      if (Math.abs(rollCmd) < 0.06) rollCmd = clamp(-rollAngle * 0.6 * levelGain, -0.4, 0.4);
-      if (Math.abs(pitchCmd) < 0.06) pitchCmd = clamp(-pitchAngle * 0.45, -0.3, 0.3);
-    }
+    // 地上にいる間はロール入力を完全に無効化し、翼を水平に保つ。
+    // resolveGround() の接地条件は roll<0.35（約20度）で「穏やかな接地」を判定しており、
+    // アシストを廃止した今は自動水平復帰も無いため、わずかでもロールが残ると
+    // 積み上がって接地クラッシュになってしまう。速度で条件を切ると、離陸滑走中に
+    // 機首を上げずロールだけ入れ続けた場合など、速度がしきい値を超えた瞬間に
+    // まだ地上にいるのにロール操作が復活してクラッシュしうる（実際に検証で確認した）。
+    // onGroundだけで判定すれば、浮き上がって初めて（＝速度に関係なく実際に接地が
+    // 解けた瞬間から）通常のロール操作に戻るため、この抜け道がなくなる。
+    if (this.onGround) rollCmd = 0;
 
     const pitchRate = pitchCmd * SPEC.pitchRate * authority;
     const rollRate = rollCmd * SPEC.rollRate * authority;

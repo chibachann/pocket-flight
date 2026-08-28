@@ -26,7 +26,7 @@ const el = {
 };
 
 /** メニューで選択中の設定。 */
-const settings = { mode: 'timeattack', scheme: 'touch', pitch: 'up', assist: 'on' };
+const settings = { mode: 'timeattack', scheme: 'touch' };
 
 /** セグメント型のボタン群を設定値に結び付ける。 */
 function bindSegment(id, key, onChange) {
@@ -45,8 +45,6 @@ bindSegment('opt-mode', 'mode');
 bindSegment('opt-scheme', 'scheme', (v) => {
   if (v === 'tilt') requestTilt();
 });
-bindSegment('opt-pitch', 'pitch');
-bindSegment('opt-assist', 'assist');
 
 /** iOSでは明示的な許可が必要なため、傾き操作の選択時に要求する。 */
 async function requestTilt() {
@@ -75,8 +73,6 @@ function startGame() {
   audio.start();
   audio.resume();
   controls.scheme = settings.scheme;
-  controls.invertPitch = settings.pitch === 'down';
-  game.aircraft.assist = settings.assist === 'on';
   if (settings.scheme === 'tilt') controls.calibrateTilt();
   game.start(settings.mode);
   showOverlay(null);
