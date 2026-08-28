@@ -625,13 +625,22 @@ export function drawApron(renderer) {
   );
 }
 
-/** 建物候補を配置するグリッドのピッチ(m)。 */
-const LOT = 85;
+/**
+ * 建物候補を配置するグリッドのピッチ(m)。
+ * 旧版は85mで、街区(SUPER)を255mまで広げていたため「広く薄く」建物を撒く形に
+ * なっていた。低空から見ると街区の舗装が広大な単色面として目立ち、その上に
+ * 疎らな建物が点在するだけの寂しい絵になっていたため、45mまで詰めて候補密度
+ * そのものを上げた（総描画数は下のCAP系定数で頭打ちにするので、密度だけが上がる）。
+ */
+const LOT = 45;
 /**
  * 道路の格子ピッチ(m)。LOTの3マス分を1街区とし、街区の外周にだけ道路を敷く。
  * 道路をLOTと同じ間隔で敷くと「区画1マスごとに道路」になって不自然に細かくなる
  * ため、複数ロットをまとめた単位を街区とすることで、道路網＋街区内に複数棟という
  * 現実の街に近い密度感にしている。
+ * 旧版の255mは実在の街区としても巨大すぎ、道路網がまばらにしか見えなかった。
+ * 135mまで詰めることで単位面積あたりの道路本数が増え、格子がひと目で
+ * 「街」と分かるようになる。
  */
 const SUPER = LOT * 3;
 /** 道路の半幅(m)。実効で ROAD_HALF_W*2 の道幅になる。 */
@@ -640,9 +649,16 @@ const ROAD_HALF_W = 5;
  * ビルを生成する半径。地形が平坦化されている範囲（terrain.jsのAIRFIELD_OUTER=1900m）の
  * 内側に必ず収める。ここを超えて起伏のある地形に建物を置くと、Zバッファが無い都合上
  * 「建物は常に地形より手前に塗られる」ため、丘の裏の建物が透けて見える破綻が起きる。
+ *
+ * 旧版は1750mまで広げていたが、同時に描画できる建物・街区の数は
+ * MAX_CITY_BUILDINGS/MAX_CITY_BLOCKSで頭打ちのため、広い面積へ薄く撒くほど
+ * どの視点を切り取っても密度が足りず「野原に箱が点在」して見えていた。
+ * 総量（描画コール数）を変えないまま面積だけ1100mまで縮めることで、同じ棟数・
+ * 街区数がより狭い範囲に密集し、見た目の密度が上がる
+ * （「広く薄く」から「狭く濃く」への転換。飛行場のクリアランスはそのまま維持）。
  */
 const CITY_MIN_R = 260;
-const CITY_MAX_R = 1750;
+const CITY_MAX_R = 1100;
 /**
  * 滑走路の中心線からのクリアランス(m)。この帯には建物・道路・舗装のいずれも置かない。
  * 離陸開始位置の直近に巨大なビルが立つと視界を圧迫する（実際に破綻していた）ため、
@@ -661,11 +677,14 @@ const APPROACH_LOW_MAX_H = 18;
  * ダウンタウン（高層ビル密集地）の中心と広がり(m)。
  * 「飛行場に近いほど低層、遠いほど高層」という基本ルールに加えて、この一点だけ
  * 高層の当選確率・存在確率を底上げすることでビルの塊＝スカイラインを作る。
- * RUNWAY_CLEAR_Xの外側かつCITY_MAX_R寄りに置き、高高度からの広域ショットで
- * 遠景のシルエットとして見えるようにしている。
+ * RUNWAY_CLEAR_XおよびAPPROACH_CLEAR_Xの外側（xでの余白を確保）かつCITY_MAX_R
+ * 寄りに置き、高高度からの広域ショットで遠景のシルエットとして見えるようにしている。
+ * CITY_MAX_Rを1750→1100mへ縮めたのに合わせて中心も内側へ寄せ、半径も380→170mへ
+ * 絞った。塔として認識できる高さのビルを狭い範囲へ固めるほどスカイラインらしく
+ * 見えるため、広がりを削ってでも塊の密度を優先している。
  */
-const DOWNTOWN = { x: 850, z: 980 };
-const DOWNTOWN_RADIUS = 380;
+const DOWNTOWN = { x: 860, z: 280 };
+const DOWNTOWN_RADIUS = 170;
 /**
  * 上限で間引く際、ダウンタウンの候補を優先して残すための下駄(m)。
  * 単純にカメラからの近い順でcapを切ると、高高度・遠方からの俯瞰では
@@ -674,13 +693,30 @@ const DOWNTOWN_RADIUS = 380;
  * 見かけの距離で選抜することで、多少遠くてもダウンタウンを優先的に描画対象へ残す。
  * 実際の描画順（画家のアルゴリズム）は本来の距離でソートし直すので、
  * これは「何を描くか」の選抜にのみ影響し、前後関係の破綻は起きない。
+ * CITY_MAX_Rの縮小に合わせて値も比例して詰めた。
  */
-const DOWNTOWN_PRIORITY_BIAS = 2400;
-/** 単体の建物の最大高さ(m)。ハンガー・管制塔（15〜40m）と隣接しても破綻しない範囲に収める。 */
-const CITY_MAX_HEIGHT = 92;
-/** 同時に描画するビル／街区（舗装・道路）の上限（近い順）。高度に応じて絞る。 */
-const MAX_CITY_BUILDINGS = 48;
-const MAX_CITY_BLOCKS = 22;
+const DOWNTOWN_PRIORITY_BIAS = 1400;
+/**
+ * 郊外の建物の最大高さ(m)。ハンガー・管制塔（15〜40m）と隣接しても破綻しない範囲に収める。
+ * ダウンタウンだけはDOWNTOWN_MAX_HEIGHTでさらに高くする（heightBudgetAt参照）。
+ */
+const CITY_MAX_HEIGHT = 70;
+/**
+ * ダウンタウン中心での建物の最大高さ(m)。塔として認識できる80〜120m級を狭い範囲へ
+ * 集めることで、周囲の低層（16〜40m）とのコントラストからスカイラインを作る。
+ */
+const DOWNTOWN_MAX_HEIGHT = 120;
+/**
+ * 同時に描画するビル／街区（舗装・道路）の上限（近い順）。高度に応じて絞る。
+ * LOTを85→45mへ詰めたことで単位面積あたりの建物候補密度が上がった分、
+ * 旧版のBUILDINGS=48のままだと「建物で埋まる近距離の一角」だけが選ばれて、
+ * その外側は街区の舗装だけが選ばれ建物が1棟も無い帯（のっぺりしたグレーの
+ * リング）ができてしまった。BUILDINGSを増やして建物が埋まる範囲をBLOCKS
+ * （舗装・道路）の可視範囲に近づけつつ、BLOCKS自体は逆に減らして舗装の
+ * 及ぶ範囲を建物のある一角に合わせて絞ることで、「建物のない舗装」を減らしている。
+ */
+const MAX_CITY_BUILDINGS = 90;
+const MAX_CITY_BLOCKS = 14;
 const cityCandidates = [];
 const cityBlocks = [];
 /** ビルの色みのバリエーション。棟ごとにハッシュで1色選ぶ。 */
@@ -701,15 +737,31 @@ function nearRoadLine(v, pitch, clearance) {
 }
 
 /**
+ * この街区(SUPERピッチ格子のi,j)を舗装せず緑地（公園）のまま残すかどうか。
+ * 街区の内側を一律にアスファルトで塗ると、面積の大きさも相まって画面下半分が
+ * のっぺりしたグレーの平面に見えてしまう（低空視点で最も目立った問題）。
+ * ダウンタウンに近いほど公園を減らして密に舗装し、郊外ほど公園を混ぜることで
+ * グレー一色の大面積を崩す。建物候補側（collectCityBuildings）でも同じ判定を使い、
+ * 公園街区には建物を置かないようにしている。
+ */
+function isParkBlock(i, j, downtownT) {
+  const parkChance = lerp(0.34, 0.05, downtownT);
+  return hashCell(i, j, 62) < parkChance;
+}
+
+/**
  * 指定位置の建物に許される最大高さ(m)を返す。
  * 飛行場中心からの距離が遠いほど高層化を許し、ダウンタウン中心に近いほどさらに
  * 底上げする。進入経路（approachLow）ではハンガー並みの低さに強制的に抑える。
+ * 上限そのものもダウンタウンに近いほどCITY_MAX_HEIGHT(70)からDOWNTOWN_MAX_HEIGHT
+ * (120)へ引き上げることで、郊外の低層と対比する「塔」を作る。
  */
 function heightBudgetAt(x, z, approachLow) {
   const fieldR = Math.hypot(x, z);
   const farT = clamp((fieldR - CITY_MIN_R) / (CITY_MAX_R - CITY_MIN_R), 0, 1);
   const downtownT = clamp(1 - Math.hypot(x - DOWNTOWN.x, z - DOWNTOWN.z) / DOWNTOWN_RADIUS, 0, 1);
-  let budget = Math.min(CITY_MAX_HEIGHT, lerp(16, 40, farT) + downtownT * 60);
+  const maxH = lerp(CITY_MAX_HEIGHT, DOWNTOWN_MAX_HEIGHT, downtownT);
+  let budget = Math.min(maxH, lerp(16, 40, farT) + downtownT * 90);
   if (approachLow) budget = Math.min(budget, APPROACH_LOW_MAX_H);
   return budget;
 }
@@ -729,21 +781,26 @@ function collectCityBuildings(renderer, cap) {
       const cz = (j + 0.5) * LOT;
       if (Math.abs(cx) < RUNWAY_CLEAR_X) continue; // 滑走路のクリアランス帯には置かない
       // 存在確率（密度）。ダウンタウン中心に近いほど密度を上げて塊にする。
+      // 旧版は0.4〜0.75（区画の半分近くが空き地）だったが、街区自体をLOT=45mまで
+      // 詰めた上でさらに充填率を0.62〜0.95へ底上げし、区画の大半が建物で
+      // 埋まるようにした（描画数の上限はcapで変わらないため、密度だけが上がる）。
       const downtownT = clamp(1 - Math.hypot(cx - DOWNTOWN.x, cz - DOWNTOWN.z) / DOWNTOWN_RADIUS, 0, 1);
-      if (hashCell(i, j, 41) > 0.4 + downtownT * 0.35) continue;
-      const x = cx + (hashCell(i, j, 42) - 0.5) * (LOT - 30);
-      const z = cz + (hashCell(i, j, 43) - 0.5) * (LOT - 30);
+      if (hashCell(i, j, 41) > 0.62 + downtownT * 0.33) continue;
+      const x = cx + (hashCell(i, j, 42) - 0.5) * (LOT - 20);
+      const z = cz + (hashCell(i, j, 43) - 0.5) * (LOT - 20);
       // 街区を区切る道路（SUPER格子の境界線）の上には置かない。
       if (nearRoadLine(x, SUPER, ROAD_HALF_W + 9) || nearRoadLine(z, SUPER, ROAD_HALF_W + 9)) continue;
       const r = Math.hypot(x, z);
       if (r < CITY_MIN_R || r > CITY_MAX_R) continue;
+      const downtownT2 = clamp(1 - Math.hypot(x - DOWNTOWN.x, z - DOWNTOWN.z) / DOWNTOWN_RADIUS, 0, 1);
+      // 公園街区（drawBlockPavementと同じ判定）には建物を置かない。
+      if (isParkBlock(Math.floor(x / SUPER), Math.floor(z / SUPER), downtownT2)) continue;
       // 滑走路の延長線上（進入経路）かどうか。低くする判定はdrawCityBuilding側で使う。
       const approachLow = Math.abs(x) < APPROACH_CLEAR_X && Math.abs(z) > RUNWAY.halfLength;
       const dx = x - cam.x;
       const dz = z - cam.z;
       const d2 = dx * dx + dz * dz;
       if (d2 > scanR * scanR) continue;
-      const downtownT2 = clamp(1 - Math.hypot(x - DOWNTOWN.x, z - DOWNTOWN.z) / DOWNTOWN_RADIUS, 0, 1);
       cityCandidates.push({ i, j, x, z, d2, approachLow, downtownT: downtownT2 });
     }
   }
@@ -788,17 +845,31 @@ function collectCityBlocks(renderer, cap) {
   cityBlocks.sort((a, b) => a.d2 - b.d2);
 }
 
-/** 街区の舗装色（アスファルト寄りのグレー）。ダウンタウンほど石畳寄りに暗くする。 */
-function blockPavementColor(bx, bz) {
+/**
+ * 街区の舗装色（アスファルト寄りのグレー）。ダウンタウンほど石畳寄りに暗くする。
+ * さらに街区ごとにハッシュで明暗のばらつきを乗せる。ダウンタウン距離だけで
+ * 決まる滑らかな色勾配だと、隣接する街区どうしがほぼ同じ色になり結局は
+ * 「巨大な単色面」に見えてしまうため、街区単位でランダムに明暗を振って
+ * パッチワーク状に見せている。
+ */
+function blockPavementColor(i, j, bx, bz) {
   const downtownT = clamp(1 - Math.hypot(bx - DOWNTOWN.x, bz - DOWNTOWN.z) / DOWNTOWN_RADIUS, 0, 1);
-  return [lerp(96, 70, downtownT), lerp(98, 72, downtownT), lerp(92, 68, downtownT)];
+  const base = [lerp(96, 70, downtownT), lerp(98, 72, downtownT), lerp(92, 68, downtownT)];
+  const jitter = (hashCell(i, j, 61) - 0.5) * 26;
+  return [clamp(base[0] + jitter, 36, 150), clamp(base[1] + jitter, 36, 150), clamp(base[2] + jitter, 36, 150)];
 }
 
-/** 街区内側の地面を1枚の平面ポリゴンで舗装寄りの色に塗り替える。 */
+/**
+ * 街区内側の地面を1枚の平面ポリゴンで舗装寄りの色に塗り替える。
+ * isParkBlockに該当する街区は塗らずに地形本来の緑を残し、公園として見せる。
+ * 舗装する街区も道路との境目にわずかな余白（緑の縁）を残し、隙間なく
+ * 敷き詰められた一枚のグレーに見えないようにしている。
+ */
 function drawBlockPavement(renderer, blk, dist) {
-  const half = SUPER / 2 - ROAD_HALF_W;
+  if (isParkBlock(blk.i, blk.j, blk.downtownT)) return;
+  const half = SUPER / 2 - ROAD_HALF_W - 4;
   const y = surfaceHeightAt(blk.bx, blk.bz) + 0.28;
-  const color = blockPavementColor(blk.bx, blk.bz);
+  const color = blockPavementColor(blk.i, blk.j, blk.bx, blk.bz);
   renderer.fillPolygon(
     [
       vec3(blk.bx - half, y, blk.bz - half),
@@ -852,15 +923,19 @@ function drawCityBuilding(renderer, c, dist) {
   const downtownT = clamp(1 - Math.hypot(x - DOWNTOWN.x, z - DOWNTOWN.z) / DOWNTOWN_RADIUS, 0, 1);
   const hSeed = hashCell(i, j, 44);
   // 高層・中層・低層を混ぜて街らしい高さのばらつきを出す。高層の当選率は
-  // ダウンタウン中心ほど上げ、スカイラインの塊を作る。
-  const highChance = 0.12 + downtownT * 0.4;
+  // ダウンタウン中心ほど大きく上げ（郊外12%→ダウンタウン中心85%）、狭い範囲に
+  // 80〜120m級の塔を数棟〜十数棟固めてスカイラインの塊を作る。
+  const highChance = 0.12 + downtownT * 0.73;
   let h;
   if (hSeed < highChance) h = budget * (0.5 + hashCell(i, j, 45) * 0.5);
   else if (hSeed < highChance + 0.35) h = 16 + hashCell(i, j, 46) * Math.max(4, budget * 0.4 - 16);
   else h = 8 + hashCell(i, j, 47) * 8;
   h = Math.min(h, budget);
-  const w = 14 + hashCell(i, j, 48) * 20;
-  const dpt = 14 + hashCell(i, j, 49) * 20;
+  // 街区(LOT=45m)の大半を建物で埋めるよう、旧版(14〜34m)より一回り大きくした
+  // （狭くした街区に合わせて充填率を上げる狙い。街区ピッチとの余白は
+  // collectCityBuildingsのオフセット・道路クリアランスで確保している）。
+  const w = 16 + hashCell(i, j, 48) * 22;
+  const dpt = 16 + hashCell(i, j, 49) * 22;
   const base = CITY_COLORS[Math.floor(hashCell(i, j, 50) * CITY_COLORS.length)];
   // 窓の帯は中層以上（高くて目立つビル）にだけ入れてポリゴン数を抑える。
   const banded = h > 26;
@@ -884,8 +959,8 @@ function drawCityBuilding(renderer, c, dist) {
  */
 export function drawCity(renderer) {
   const camY = renderer.camPos.y;
-  const buildingCap = camY > 700 ? 14 : camY > 350 ? 28 : MAX_CITY_BUILDINGS;
-  const blockCap = camY > 700 ? 8 : camY > 350 ? 14 : MAX_CITY_BLOCKS;
+  const buildingCap = camY > 700 ? 14 : camY > 350 ? 44 : MAX_CITY_BUILDINGS;
+  const blockCap = camY > 700 ? 8 : camY > 350 ? 10 : MAX_CITY_BLOCKS;
   collectCityBuildings(renderer, buildingCap);
   collectCityBlocks(renderer, blockCap);
 
