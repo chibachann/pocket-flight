@@ -1,0 +1,41 @@
+# main へのプッシュごとに、リポジトリの中身をそのまま GitHub Pages へ公開する。
+# ビルド工程はなく、静的ファイルをアップロードするだけ。
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # 手動実行も可能にしておく。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 公開処理は同時に1つだけ走らせる。実行中のものは中断しない。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Pages の設定を読み込む
+        uses: actions/configure-pages@v5
+
+      - name: 静的ファイルをアップロード
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - name: Pages へ公開
+        id: deployment
+        uses: actions/deploy-pages@v4

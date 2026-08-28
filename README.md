@@ -4,7 +4,13 @@
 Canvas 2D の上に最小限の3Dパイプライン（透視投影・ニアクリップ・画家のアルゴリズム）を自前で実装しており、
 WebGLもビルド工程も使いません。ファイルをそのまま静的配信すれば動きます。
 
-## 動かす
+## 遊ぶ
+
+公開URL: https://chibachann.github.io/pocket-flight/
+
+`main` へのプッシュごとに GitHub Actions（`.github/workflows/pages.yml`）が自動で公開します。
+
+## 手元で動かす
 
 ```bash
 npm start
