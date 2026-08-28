@@ -3,7 +3,7 @@
  * 座標はキャンバスの実ピクセル。端末に合わせて基準スケール s を掛ける。
  */
 
-import { clamp, pitchOf, rollOf, headingOf } from './math.js';
+import { clamp, headingOf } from './math.js';
 import { controlLayout } from './controls.js';
 
 const FONT = "600 %FPX% ui-monospace, SFMono-Regular, Menlo, 'Roboto Mono', monospace";
@@ -46,106 +46,6 @@ function panel(ctx, x, y, w, h, s, label, value, unit, accent) {
     ctx.font = font(9 * s);
     ctx.fillText(unit, x + w - 7 * s - ctx.measureText(unit).width, y + h - 8 * s);
   }
-}
-
-/** ピッチラダーと水平線を描く。 */
-function drawAttitude(ctx, renderer, aircraft, s) {
-  const cx = renderer.width / 2;
-  const cy = renderer.height / 2;
-  const pitch = pitchOf(aircraft.basis);
-  const roll = rollOf(aircraft.basis);
-  const f = renderer.focal;
-  const boxW = Math.min(renderer.width * 0.52, 420 * s);
-  const boxH = Math.min(renderer.height * 0.5, 260 * s);
-
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(cx - boxW / 2, cy - boxH / 2, boxW, boxH);
-  ctx.clip();
-  ctx.translate(cx, cy);
-  ctx.rotate(-roll);
-  ctx.lineWidth = Math.max(1, 1.6 * s);
-
-  // 水平線
-  const hy = f * Math.tan(clamp(pitch, -1.45, 1.45));
-  ctx.strokeStyle = 'rgba(126, 240, 214, 0.9)';
-  ctx.beginPath();
-  ctx.moveTo(-boxW, hy);
-  ctx.lineTo(-14 * s, hy);
-  ctx.moveTo(14 * s, hy);
-  ctx.lineTo(boxW, hy);
-  ctx.stroke();
-
-  // ピッチラダー（10度刻み）
-  ctx.font = font(10 * s);
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  for (let deg = -60; deg <= 60; deg += 10) {
-    if (deg === 0) continue;
-    const p = (deg * Math.PI) / 180;
-    const y = f * Math.tan(clamp(pitch - p, -1.45, 1.45));
-    if (Math.abs(y) > boxH) continue;
-    const half = (deg > 0 ? 44 : 32) * s;
-    ctx.strokeStyle = deg > 0 ? 'rgba(126, 240, 214, 0.62)' : 'rgba(126, 240, 214, 0.4)';
-    ctx.beginPath();
-    if (deg > 0) {
-      ctx.moveTo(-half, y);
-      ctx.lineTo(-14 * s, y);
-      ctx.moveTo(14 * s, y);
-      ctx.lineTo(half, y);
-    } else {
-      // 機首下げ側は破線で区別する。
-      for (const side of [-1, 1]) {
-        ctx.moveTo(side * 14 * s, y);
-        ctx.lineTo(side * 24 * s, y);
-        ctx.moveTo(side * 32 * s, y);
-        ctx.lineTo(side * half, y);
-      }
-    }
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(160, 226, 214, 0.75)';
-    ctx.fillText(String(Math.abs(deg)), -half - 4 * s, y);
-  }
-  ctx.restore();
-
-  // 機体基準マーク（常に画面中央）
-  ctx.strokeStyle = '#ffd166';
-  ctx.lineWidth = Math.max(1.5, 2 * s);
-  ctx.beginPath();
-  ctx.moveTo(cx - 30 * s, cy);
-  ctx.lineTo(cx - 12 * s, cy);
-  ctx.lineTo(cx - 6 * s, cy + 7 * s);
-  ctx.moveTo(cx + 30 * s, cy);
-  ctx.lineTo(cx + 12 * s, cy);
-  ctx.lineTo(cx + 6 * s, cy + 7 * s);
-  ctx.stroke();
-}
-
-/** 速度ベクトルの向き（飛行経路マーカー）を描く。 */
-function drawFlightPath(ctx, renderer, aircraft, s) {
-  const v = aircraft.vel;
-  if (Math.hypot(v.x, v.y, v.z) < 5) return;
-  const cf = renderer.camForward;
-  const cr = renderer.camRight;
-  const cu = renderer.camUp;
-  const z = v.x * cf.x + v.y * cf.y + v.z * cf.z;
-  if (z <= 0.01) return;
-  const x = v.x * cr.x + v.y * cr.y + v.z * cr.z;
-  const y = v.x * cu.x + v.y * cu.y + v.z * cu.z;
-  const sx = renderer.width / 2 + (x * renderer.focal) / z;
-  const sy = renderer.height / 2 - (y * renderer.focal) / z;
-  const r = 7 * s;
-  ctx.strokeStyle = 'rgba(126, 240, 214, 0.95)';
-  ctx.lineWidth = Math.max(1.2, 1.6 * s);
-  ctx.beginPath();
-  ctx.arc(sx, sy, r, 0, Math.PI * 2);
-  ctx.moveTo(sx - r, sy);
-  ctx.lineTo(sx - r * 2.1, sy);
-  ctx.moveTo(sx + r, sy);
-  ctx.lineTo(sx + r * 2.1, sy);
-  ctx.moveTo(sx, sy - r);
-  ctx.lineTo(sx, sy - r * 1.9);
-  ctx.stroke();
 }
 
 /** 方位テープを描く。 */
@@ -246,7 +146,7 @@ function drawStick(ctx, renderer, controls, s) {
   ctx.fill();
 }
 
-/** 目標リングの方向指示を描く。 */
+/** 目標地点の方向指示を描く。 */
 function drawTargetPointer(ctx, renderer, target, s) {
   const cf = renderer.camForward;
   const cr = renderer.camRight;
@@ -292,16 +192,19 @@ function drawTargetPointer(ctx, renderer, target, s) {
     ctx.fill();
     ctx.restore();
   } else {
-    ctx.strokeStyle = 'rgba(126, 240, 214, 0.9)';
-    ctx.lineWidth = Math.max(1.2, 1.6 * s);
-    const r = 22 * s;
+    // GTAのウェイポイントマーカーのように、目標の少し上に浮かぶ下向きの三角形（シェブロン）を描く。
+    // 4円弧のリングは計器のスコープに見えるためやめ、シンプルな図形にした。
+    const r = 11 * s;
+    const topY = sy - 24 * s;
+    ctx.fillStyle = '#ffd166';
+    ctx.strokeStyle = 'rgba(6, 18, 26, 0.6)';
+    ctx.lineWidth = Math.max(1, 1.2 * s);
     ctx.beginPath();
-    for (let i = 0; i < 4; i++) {
-      const a0 = (i * Math.PI) / 2 + Math.PI / 8;
-      const a1 = a0 + Math.PI / 4;
-      ctx.moveTo(sx + Math.cos(a0) * r, sy + Math.sin(a0) * r);
-      ctx.arc(sx, sy, r, a0, a1);
-    }
+    ctx.moveTo(sx, topY + r); // 下の頂点が目標側を指す
+    ctx.lineTo(sx - r, topY - r * 0.55);
+    ctx.lineTo(sx + r, topY - r * 0.55);
+    ctx.closePath();
+    ctx.fill();
     ctx.stroke();
   }
   ctx.fillStyle = 'rgba(255, 209, 102, 0.95)';
@@ -346,8 +249,8 @@ export function drawHud(renderer, aircraft, controls, status) {
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
-  drawAttitude(ctx, renderer, aircraft, s);
-  drawFlightPath(ctx, renderer, aircraft, s);
+  // 画面中央のピッチラダー／飛行経路マーカーは計器然として見えるため描画しない。
+  // GTA的なアーケード視点では、方位テープと左右パネルだけで十分に飛ばせる。
   drawHeadingTape(ctx, renderer, aircraft, s);
 
   const pw = 92 * s;
