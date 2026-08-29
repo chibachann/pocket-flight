@@ -12,9 +12,19 @@ export const FAR = 6400;
 /** フォグが効き始める距離（m）。 */
 export const FOG_START = 800;
 
-/** 空の色（フォグの到達色でもある）。 */
+/**
+ * 空の色（多段グラデーション）。
+ * SKY_HORIZON は FOG の到達色でもあるため変更しない（地形フォグと地平線が
+ * 必ず同じ色で滑らかに繋がるようにするため）。ZENITH→MID→HAZE→HORIZON の
+ * 4段で、天頂の深い青から地平線のヘイズ（白っぽいかすみ）まで補間する。
+ */
 export const SKY_HORIZON = [176, 202, 226];
+// 元の天頂色。一度もっと深い青(24,66,138)に変えたところ、デモカメラのように
+// 少し見下ろす角度では画面の大半が天頂寄りの色になり、夜のように暗く見えて
+// しまったため、元の明るさに戻した上でMID/HAZEだけ新設している。
 export const SKY_ZENITH = [42, 92, 168];
+const SKY_MID = [86, 142, 200];
+const SKY_HAZE = [204, 218, 232];
 
 /** 縦画面で確保したい水平視野角の下限（ラジアン）。 */
 const PORTRAIT_MIN_H_FOV = (68 * Math.PI) / 180;
@@ -114,17 +124,24 @@ export class Renderer {
     return this.height / 2 - (c.y * this.focal) / c.z;
   }
 
-  /** 空と水平線のグラデーションで画面を塗る。 */
+  /** 空と水平線のグラデーションで画面を塗る（天頂→中間→ヘイズ→地平線の4段）。 */
   drawSky() {
     const ctx = this.ctx;
-    // カメラの上方向がどれだけ空を向いているかで天頂色の量を決める。
+    // カメラの上方向がどれだけ空を向いているかで、画面のどのあたりが
+    // 「地平線相当」になるかが変わる。tは画面下端が地平線からどれだけ
+    // 進んだ色かを表す0〜1の量で、機首を上げるほど（camForward.yが増えるほど）
+    // 画面全体が天頂寄りの色になる。
     const g = ctx.createLinearGradient(0, 0, 0, this.height);
     const t = clamp(0.5 - this.camForward.y * 0.5, 0, 1);
     const mix = (a, b, k) => `rgb(${Math.round(a[0] + (b[0] - a[0]) * k)},${Math.round(
       a[1] + (b[1] - a[1]) * k,
     )},${Math.round(a[2] + (b[2] - a[2]) * k)})`;
-    g.addColorStop(0, mix(SKY_ZENITH, SKY_HORIZON, clamp(t - 0.25, 0, 1)));
-    g.addColorStop(1, mix(SKY_ZENITH, SKY_HORIZON, clamp(t + 0.75, 0, 1)));
+    // 4ストップとも同じtシフトの上に重ねることで、姿勢が変わっても
+    // 各色の並び（天頂〜地平線）が保たれたまま画面内でスライドする。
+    g.addColorStop(0, mix(SKY_ZENITH, SKY_HORIZON, clamp(t - 0.35, 0, 1)));
+    g.addColorStop(0.55, mix(SKY_MID, SKY_HORIZON, clamp(t + 0.05, 0, 1)));
+    g.addColorStop(0.85, mix(SKY_HAZE, SKY_HORIZON, clamp(t + 0.55, 0, 1)));
+    g.addColorStop(1, mix(SKY_ZENITH, SKY_HORIZON, clamp(t + 0.85, 0, 1)));
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, this.width, this.height);
   }

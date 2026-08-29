@@ -75,6 +75,22 @@ export function groundHeightAt(x, z) {
 }
 
 /**
+ * 水面の色を水深から決める。浅瀬は明るいターコイズ、深海は濃紺にする。
+ * depth は海面下の深さ（m、正の値）。shade は太陽方向のきらめきを
+ * 上乗せできるよう 0〜1 を超えて渡せる（drawRing 側でハイライト分を加算する）。
+ */
+export function waterColor(depth, shade) {
+  const t = clamp(depth / 40, 0, 1); // 水深40mあたりで最も濃い色に達する
+  const shallow = [58, 168, 178];
+  const deep = [14, 46, 92];
+  const r = lerp(shallow[0], deep[0], t);
+  const g = lerp(shallow[1], deep[1], t);
+  const b = lerp(shallow[2], deep[2], t);
+  const s = 0.55 + shade * 0.55;
+  return [Math.round(clamp(r * s, 0, 255)), Math.round(clamp(g * s, 0, 255)), Math.round(clamp(b * s, 0, 255))];
+}
+
+/**
  * 標高と斜度から地表色を決める。
  * shade は 0〜1 程度の簡易ライティング係数。
  */
@@ -83,7 +99,7 @@ export function terrainColor(height, slope, shade) {
   let g;
   let b;
   if (height <= 0.01) {
-    // 海
+    // 海（水深情報を持たない呼び出し元向けのフォールバック。通常は waterColor を使う）
     r = 26;
     g = 74;
     b = 116;

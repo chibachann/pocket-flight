@@ -6,7 +6,19 @@
 
 import { Aircraft } from './aircraft.js';
 import { checkGatePass, createCourse, isOverRunway, RUNWAY } from './course.js';
-import { drawAircraft, drawBuildings, drawClouds, drawGates, drawRunway, drawTerrain, drawTrees } from './scene.js';
+import {
+  drawAircraft,
+  drawAircraftShadow,
+  drawApron,
+  drawBuildings,
+  drawCity,
+  drawClouds,
+  drawGates,
+  drawRunway,
+  drawSun,
+  drawTerrain,
+  drawTrees,
+} from './scene.js';
 import { drawHud } from './hud.js';
 import { groundHeightAt } from './terrain.js';
 import {
@@ -309,11 +321,20 @@ export class Game {
   render(withHud = true) {
     const r = this.renderer;
     r.setCamera(this.camPos, this.camBasis);
+    // 描画順が全て（Zバッファ無しの画家のアルゴリズムのため）。
+    // 空・太陽 → 地形（山や海に隠れるべきもの） → 樹木 → 滑走路・エプロン →
+    // 飛行場の建物・街 → 自機の影 → 雲 → リング → 自機、の順に必ず奥から手前へ塗る。
+    // この順序を崩すと、丘の裏の建物が手前に透ける・影が地形の下に沈む等の
+    // 破綻が起きるので、要素を追加するときもこの並びを維持すること。
     r.drawSky();
+    drawSun(r);
     drawTerrain(r);
     drawTrees(r);
     drawRunway(r);
+    drawApron(r);
+    drawCity(r);
     drawBuildings(r);
+    drawAircraftShadow(r, this.aircraft);
     drawClouds(r);
     drawGates(r, this.gates, this.activeGate);
     if (withHud && this.cameraMode === 'chase') drawAircraft(r, this.aircraft, this.elapsed);
